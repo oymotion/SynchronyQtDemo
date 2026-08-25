@@ -54,3 +54,12 @@ compile_commands.json
 *creator.user*
 
 *_qmlcache.qrc
+
+# Demo build dirs from CMakePresets
+build_*/
+
+# The prebuilt SDK libraries under lib/ are the shipped product
+!lib/**/*.dll
+!lib/**/*.so
+!lib/**/*.a
+!lib/**/*.dylib
