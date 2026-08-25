@@ -62,7 +62,7 @@ extern "C" {
 /* ABI/API version of this header. MUST be incremented by 1 on EVERY change
    to the definitions in this file (structs, callbacks, functions); read at
    runtime via sen_capi_version(). */
-#define SEN_CAPI_VERSION 7
+#define SEN_CAPI_VERSION 10
 
 typedef struct sen_controller sen_controller_t;
 typedef struct sen_profile sen_profile_t;
@@ -266,10 +266,14 @@ typedef void (*sen_data_cb)(void* ctx, sen_profile_t* profile,
 typedef void (*sen_state_cb)(void* ctx, sen_profile_t* profile, int newState);
 typedef void (*sen_error_cb)(void* ctx, sen_profile_t* profile, const char* errorMsg);
 typedef void (*sen_power_cb)(void* ctx, sen_profile_t* profile, int power);
-// Return non-zero to take over session recovery yourself (SDK skips its
-// default init -> setParam replay -> stream restart flow), zero for the
-// default recovery.
-typedef int (*sen_auto_reconnect_cb)(void* ctx, sen_profile_t* profile, int hasLastSession);
+/* Answer callback for sen_auto_reconnect_cb: call it exactly once, from any
+   thread, with non-zero to take over session recovery yourself (SDK skips its
+   default init -> setParam replay -> stream restart flow), zero for the
+   default recovery. If no answer arrives within 10 s the SDK runs the
+   default recovery. */
+typedef void (*sen_auto_reconnect_answer_cb)(void* answerCtx, int handled);
+typedef void (*sen_auto_reconnect_cb)(void* ctx, sen_profile_t* profile, int hasLastSession,
+                                      sen_auto_reconnect_answer_cb answer, void* answerCtx);
 // DeviceInfo field change push (aligned with the Python SDK 0.7.0
 // onDeviceInfoUpdate): fired after the cached DeviceInfo was updated in
 // place (e.g. setParam "EEG_SAMPLE_RATE" rewrote the bound EEG/ECG rates,
@@ -308,6 +312,13 @@ typedef void (*sen_completion_cb)(void* ctx, int result, const char* errorMsg);
 typedef void (*sen_param_cb)(void* ctx, const char* result, const char* errorMsg);
 typedef void (*sen_battery_cb)(void* ctx, int result, const char* errorMsg);
 typedef void (*sen_info_cb)(void* ctx, const sen_device_info_t* info, const char* errorMsg);
+
+/* Multi-device synchronized start/stop result: one entry per device.
+   macs[i] is the device MAC, oks[i] is 1/0, errors[i] is the failure reason
+   (empty when oks[i] is 1). All arrays are callback-scope borrowed. */
+typedef void (*sen_multi_result_cb)(void* ctx, const char* const* macs,
+                                    const int* oks, const char* const* errors,
+                                    size_t count);
 
 /* ---- controller -------------------------------------------------------- */
 
@@ -368,6 +379,20 @@ SEN_API int sen_controller_get_bin_file_info(sen_controller_t* ctrl, const char*
 SEN_API sen_profile_t* sen_controller_replay_bin_file(sen_controller_t* ctrl, const char* path,
                                                             const char* deviceMac, int realtime,
                                                             uint32_t timeoutMs);
+// Synchronized multi-bin replay: every (paths[i], macs[i]) capture replays on
+// one shared clock aligned by record timestamps (the earliest record in the
+// group is t=0, so concurrently recorded captures keep their original
+// relative offsets). Pausing/resuming any member freezes/resumes the WHOLE
+// group; stop stays per device. outProfiles (capacity count, may be NULL) is
+// filled input-order aligned, NULL for a member that failed validation
+// (empty/duplicate mac, mac already replaying or streaming live, unreadable
+// file). Returns the number of members that started.
+SEN_API size_t sen_controller_multi_replay_bin_file(sen_controller_t* ctrl,
+                                                    const char* const* paths,
+                                                    const char* const* macs,
+                                                    size_t count, int realtime,
+                                                    uint32_t timeoutMs,
+                                                    sen_profile_t** outProfiles);
 // These write "OK" or "Error: ..." into buf (NUL-terminated, truncated to len).
 SEN_API void sen_controller_pause_bin_replay(sen_controller_t* ctrl, const char* deviceMac,
                                                    char* buf, size_t len);
@@ -393,6 +418,23 @@ SEN_API void sen_controller_log(sen_controller_t* ctrl, const char* message, con
    SDK log queue to disk, so an app killed while suspended loses as little as
    possible. Does NOT stop scanning, streaming, or any connection. */
 SEN_API void sen_controller_on_suspend(sen_controller_t* ctrl);
+
+/* Synchronized multi-device stream start/stop (SensorController::
+   multiStartDataNotification parity): the start writes of all valid devices
+   are released through one barrier, then each device's first-packet delay is
+   validated (dispersion max-min must be <= maxDelayDispersionMs; pass a
+   negative value to disable the check), retrying up to maxAttempts times.
+   Devices that fail validation (not connected / not initialized / busy) get
+   oks[i]=0 and do not affect the others. cb may be NULL (fire-and-forget);
+   a non-NULL cb fires exactly once on an SDK thread. */
+SEN_API void sen_controller_multi_start_data(sen_controller_t* ctrl,
+                                             sen_profile_t* const* profiles, size_t count,
+                                             int timeoutMs, int maxDelayDispersionMs, int maxAttempts,
+                                             sen_multi_result_cb cb, void* ctx);
+SEN_API void sen_controller_multi_stop_data(sen_controller_t* ctrl,
+                                            sen_profile_t* const* profiles, size_t count,
+                                            int timeoutMs,
+                                            sen_multi_result_cb cb, void* ctx);
 
 /* ---- profile ----------------------------------------------------------- */
 

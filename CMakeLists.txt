@@ -32,7 +32,8 @@ endif()
 #   lib/windows/<x64|x86>/<Debug|Release>/    sensor.dll/.lib (x86: sensor32.*)
 #   lib/linux/<x86_64|x86>/libsensor.so
 #   lib/android/<abi>/libsensor.so            arm64-v8a, armeabi-v7a, x86, x86_64
-#   lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator, macos
+#   lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator
+#   lib/macos/libsensor.dylib                 macOS (universal, @rpath)
 #
 # Every platform's library choice has a cache variable below; pass
 # -D<NAME>=<value> at configure time to override.
@@ -60,7 +61,9 @@ endif()
 
 if(APPLE)
     set(SENSOR_SDK_XCFRAMEWORK "${SENSOR_SDK_ROOT}/lib/xcframework/sensor.xcframework"
-        CACHE PATH "Static sensor.xcframework linked on macOS / iOS")
+        CACHE PATH "Static sensor.xcframework linked on iOS")
+    set(SENSOR_SDK_MAC_DYLIB "${SENSOR_SDK_ROOT}/lib/macos/libsensor.dylib"
+        CACHE PATH "Shared libsensor.dylib linked on macOS")
 endif()
 
 # Android: the ABI comes from the Qt kit (CMAKE_ANDROID_ARCH_ABI); the
@@ -173,13 +176,17 @@ elseif(WIN32)
         message(WARNING "windeployqt not found; copy the Qt DLLs next to DemoEMG.exe manually")
     endif()
 elseif(APPLE)
-    # Static sensor.xcframework, macos-arm64 slice. The static SDK needs its
-    # system frameworks linked by the consumer. Qt itself is found through
-    # the build rpath.
-    target_link_libraries(DemoEMG PRIVATE
-        "${SENSOR_SDK_XCFRAMEWORK}"
-        "-framework CoreBluetooth"
-        "-framework Foundation"
+    # Shared libsensor.dylib. Its install name is @rpath/libsensor.dylib:
+    # the dylib is copied next to the executable and found through
+    # @executable_path. Qt itself is found through the build rpath.
+    target_link_libraries(DemoEMG PRIVATE "${SENSOR_SDK_MAC_DYLIB}")
+    set_target_properties(DemoEMG PROPERTIES
+        BUILD_RPATH "@executable_path"
+    )
+    add_custom_command(TARGET DemoEMG POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${SENSOR_SDK_MAC_DYLIB}"
+            "$<TARGET_FILE_DIR:DemoEMG>/libsensor.dylib"
     )
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SENSOR_LINUX_LIB "${SENSOR_SDK_ROOT}/lib/linux/${SENSOR_SDK_LINUX_ARCH}/libsensor.so")

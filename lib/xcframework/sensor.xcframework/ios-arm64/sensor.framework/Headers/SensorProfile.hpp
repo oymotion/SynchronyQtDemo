@@ -88,10 +88,13 @@ public:
     virtual void onSensorNotifyData(std::shared_ptr<SensorProfile> profile, const std::vector<SensorDataView>& rawDataList) {};
     // Called before the SDK restores the session after an auto reconnect.
     // hasLastSession is true when there was a previous (initialized) session.
-    // Return true to take over the recovery yourself (SDK skips its default
-    // init -> setParam replay -> startDataNotification flow), false to let
-    // the SDK run the default recovery.
-    virtual bool onAutoReconnect(std::shared_ptr<SensorProfile> profile, bool hasLastSession) { return false; };
+    // Answer asynchronously through the passed callback, exactly once and from
+    // any thread: answer(true) takes over the recovery yourself (SDK skips its
+    // default init -> setParam replay -> startDataNotification flow),
+    // answer(false) lets the SDK run the default recovery. If no answer
+    // arrives within 10 s the SDK falls back to the default recovery.
+    virtual void onAutoReconnect(std::shared_ptr<SensorProfile> profile, bool hasLastSession,
+                                 std::function<void(bool handled)> answer) { answer(false); };
     // Battery level push from the profile's polling loop (started by init's
     // powerRefreshInterval); only valid readings are reported, held inside a
     // +/-4% stable band.

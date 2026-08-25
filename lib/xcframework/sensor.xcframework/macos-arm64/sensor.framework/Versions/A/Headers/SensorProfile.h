@@ -5,10 +5,7 @@
 //
 //  Threading: all async ops are completion-block style (no sync forms; a nil
 //  completion = fire-and-forget). Completion blocks and delegate calls fire
-//  on internal SDK threads — hop to the main queue for UI work. The one
-//  exception is onAutoReconnect:hasLastSession:, which must answer
-//  synchronously on an SDK thread (return immediately, never call blocking
-//  SDK methods from it).
+//  on internal SDK threads — hop to the main queue for UI work.
 //
 
 #import <Foundation/Foundation.h>
@@ -98,11 +95,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// start) or stops (stopDataNotification, link loss, replay end).
 /// isTransferring is YES while streaming. Fires on an internal SDK thread.
 - (void)onDataTransferStateChange:(SensorProfile*)profile isTransferring:(BOOL)isTransferring;
-/// Gates session recovery after an auto reconnect. Return YES to take over
+/// Gates session recovery after an auto reconnect. Answer through the passed
+/// block, exactly once and from any thread: answer(YES) takes over the
 /// recovery yourself (the SDK skips its default init -> setParam replay ->
-/// stream restart flow), NO for the default recovery. Invoked SYNCHRONOUSLY
-/// on an SDK thread.
-- (BOOL)onAutoReconnect:(SensorProfile*)profile hasLastSession:(BOOL)hasLastSession;
+/// stream restart flow), answer(NO) runs the default recovery. If no answer
+/// arrives within 10 s the SDK runs the default recovery.
+- (void)onAutoReconnect:(SensorProfile*)profile hasLastSession:(BOOL)hasLastSession
+                 answer:(void (^)(BOOL handled))answer;
 @end
 
 NS_ASSUME_NONNULL_END

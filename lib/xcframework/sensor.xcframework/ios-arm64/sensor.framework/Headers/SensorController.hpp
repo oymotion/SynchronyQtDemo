@@ -4,12 +4,16 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <map>
+#include <utility>
+#include <functional>
 #include "SensorProfile.hpp"
 #include "export.h"
 
 namespace sensor {
 
-
+// Per-device result of a multi-device operation: device mac -> {ok, errorMsg}.
+using MultiResultCallback = std::function<void(const std::map<std::string, std::pair<bool, std::string>>&)>;
 
 class SENSORSDK_API SensorControllerDelegate
 {
@@ -91,6 +95,45 @@ public:
     // streaming, or any connection. Never throws.
     // Appended at the end to keep the existing vtable order stable.
     virtual void onSuspend() = 0;
+
+    // Synchronized multi-device stream start. Every sensor must be connected
+    // (Ready) and initialized; entries that fail validation get their own
+    // {false, reason} result and do not affect the others. Devices already
+    // streaming are stopped first so every stream (re)starts together. After
+    // the start, the first-packet delays of all devices are compared: when
+    // the dispersion (max - min) exceeds maxDelayDispersionMs, or a device
+    // produces no first packet within 2 s, the whole group is stopped and
+    // restarted, up to maxAttempts rounds (minimum 1); a negative
+    // maxDelayDispersionMs disables the dispersion check. On final failure
+    // every device is left stopped. timeoutMs is the per-device command
+    // timeout in ms (<= 0 selects the 25 s default). cb fires exactly once
+    // on the controller callback thread with one {ok, errorMsg} entry per
+    // device mac.
+    // Appended at the end to keep the existing vtable order stable.
+    virtual void multiStartDataNotification(const std::vector<std::shared_ptr<SensorProfile>>& sensors,
+                                            int timeoutMs, int maxDelayDispersionMs, int maxAttempts,
+                                            MultiResultCallback cb) = 0;
+    // Synchronized multi-device stream stop. Devices that are not streaming
+    // report success immediately. cb fires exactly once on the controller
+    // callback thread with one {ok, errorMsg} entry per device mac.
+    // Appended at the end to keep the existing vtable order stable.
+    virtual void multiStopDataNotification(const std::vector<std::shared_ptr<SensorProfile>>& sensors,
+                                           int timeoutMs, MultiResultCallback cb) = 0;
+
+    // Synchronized multi-bin replay: every (path, deviceMac) capture replays
+    // on one shared clock aligned by record timestamps - the earliest record
+    // across the group is t=0 and original capture-time offsets are
+    // preserved (a device that started streaming later delivers its first
+    // data correspondingly later). Pausing/resuming any member
+    // freezes/resumes the whole group; pauseBinReplay/resumeBinReplay/
+    // stopBinReplay keep working per device mac. The returned vector is
+    // input-order aligned; a nullptr entry marks a member that failed
+    // validation (empty/duplicate mac, mac already replaying or streaming
+    // live, unreadable file).
+    // Appended at the end to keep the existing vtable order stable.
+    virtual std::vector<std::shared_ptr<SensorProfile>> multiReplayBinFile(
+        const std::vector<std::pair<std::string, std::string>>& pathMacList,
+        bool realtime, unsigned int timeoutMs) = 0;
 
 };
 

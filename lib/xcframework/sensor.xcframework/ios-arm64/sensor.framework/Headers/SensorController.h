@@ -54,6 +54,31 @@ NS_ASSUME_NONNULL_BEGIN
 /// Profiles whose link state is Connected or Ready.
 - (NSArray<SensorProfile*>*)getConnectedSensors;
 
+/// Synchronized multi-device stream start: the start writes of all valid
+/// devices are released together, then the first-packet-delay spread across
+/// them is validated (pass a negative maxDelayDispersionMs to skip the
+/// check), retrying up to maxAttempts times. Already-streaming devices are
+/// restarted. Each sensor must be Ready and initialized; devices that fail
+/// validation get their own failure entry and do not affect the others.
+/// The completion fires exactly once on an internal SDK thread with the
+/// per-device results (mac -> @(BOOL)) and failure reasons (mac -> error
+/// string, failed devices only); nil = fire-and-forget.
+- (void)multiStartDataNotification:(NSArray<SensorProfile*>*)sensors
+                         timeoutMs:(int)timeoutMs
+              maxDelayDispersionMs:(int)maxDelayDispersionMs
+                       maxAttempts:(int)maxAttempts
+                        completion:(nullable void (^)(NSDictionary<NSString*, NSNumber*>* results,
+                                                      NSDictionary<NSString*, NSString*>* errors))completion;
+/// Synchronized multi-device stream stop: the stop writes of all valid
+/// devices are released together. Non-streaming devices report success
+/// immediately. The completion contract matches
+/// multiStartDataNotification:timeoutMs:maxDelayDispersionMs:maxAttempts:completion:
+/// (nil = fire-and-forget).
+- (void)multiStopDataNotification:(NSArray<SensorProfile*>*)sensors
+                        timeoutMs:(int)timeoutMs
+                       completion:(nullable void (^)(NSDictionary<NSString*, NSNumber*>* results,
+                                                     NSDictionary<NSString*, NSString*>* errors))completion;
+
 - (void)setDebugEnabled:(bool)enabled;
 - (void)setDataLogEnabled:(bool)enabled;
 - (void)setLogPath:(bool)enabled path:(NSString*)path;
@@ -76,6 +101,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// or any placeholder such as @"REPLAY").
 - (nullable SensorProfile*)replayBinFile:(NSString*)path deviceMac:(NSString*)deviceMac
                                 realtime:(BOOL)realtime timeout:(NSTimeInterval)timeout;
+/// Synchronized multi-bin replay: every (paths[i], deviceMacs[i]) capture
+/// replays on one shared clock aligned by record timestamps (the earliest
+/// record in the group is t=0, so concurrently recorded captures keep their
+/// original relative offsets). Pausing/resuming any member freezes/resumes
+/// the whole group; stopBinReplay: stays per device. Returns an array aligned
+/// with the inputs; an NSNull entry marks a member that failed
+/// (empty/duplicate mac, mac already replaying or streaming live, unreadable
+/// file). paths and deviceMacs must be equally sized.
+- (NSArray*)multiReplayBinFile:(NSArray<NSString*>*)paths
+                    deviceMacs:(NSArray<NSString*>*)macs
+                      realtime:(BOOL)realtime timeout:(NSTimeInterval)timeout;
 /// These return @"OK" or an @"Error: ..." string. stopBinReplay joins the
 /// replay thread — call it off the main thread.
 - (NSString*)pauseBinReplay:(NSString*)deviceMac;

@@ -22,7 +22,8 @@ lib/windows/x86/<Debug|Release>/          sensor32.dll + sensor32.lib (32-bit)
 lib/linux/x86_64/libsensor.so
 lib/linux/x86/libsensor.so                (32-bit)
 lib/android/<abi>/libsensor.so            arm64-v8a, armeabi-v7a, x86, x86_64
-lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator, macos (static)
+lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator (static)
+lib/macos/libsensor.dylib                 macOS (universal, @rpath install name)
 ```
 
 The demo's CMake picks the library for the target platform automatically;
@@ -33,7 +34,8 @@ each choice has a configure-time option to override it:
 | `SENSOR_SDK_ROOT` | all | package root containing `include/` + `lib/` |
 | `SENSOR_SDK_WIN_ARCH` | Windows | `x64`, `x86` |
 | `SENSOR_SDK_LINUX_ARCH` | Linux | `x86_64`, `x86` |
-| `SENSOR_SDK_XCFRAMEWORK` | macOS/iOS | path to `sensor.xcframework` |
+| `SENSOR_SDK_XCFRAMEWORK` | iOS | path to `sensor.xcframework` |
+| `SENSOR_SDK_MAC_DYLIB` | macOS | path to `libsensor.dylib` |
 | — | Android | follows the Qt kit ABI (`CMAKE_ANDROID_ARCH_ABI`) |
 
 To link a self-built SDK instead, point `SENSOR_SDK_ROOT` at a directory with
@@ -435,6 +437,10 @@ macOS:
 cmake --preset qt-demo-mac
 cmake --build --preset qt-demo-mac                # -> build_mac/DemoEMG
 ```
+
+A post-build step copies `libsensor.dylib` next to the executable, and the
+binary finds it through `@executable_path` (the dylib's install name is
+`@rpath/libsensor.dylib`), so the folder is self-contained.
 
 Linux (set `QT_LINUX_KIT` to the Qt 6 kit, e.g. `~/Qt/6.10.2/gcc_64`; add
 `-DSENSOR_SDK_LINUX_ARCH=x86` for a 32-bit build with a 32-bit Qt kit):
