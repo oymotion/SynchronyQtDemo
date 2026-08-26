@@ -22,6 +22,9 @@ public:
     void clear();
     void setLabels(const QStringList& labels);
     void setPlaceholder(const QString& text);
+    // colorIndex >= 0 pins the curve color (single-channel rows); -1 colors
+    // each curve by its row index.
+    void setColorIndex(int colorIndex);
 
     QSize minimumSizeHint() const override;
 
@@ -32,6 +35,7 @@ private:
     std::vector<float> _freqs;
     std::vector<std::vector<float>> _mags;
     QStringList _labels;
+    int _colorIndex = -1;
     QString _placeholder = QStringLiteral("Not connected");
 };
 

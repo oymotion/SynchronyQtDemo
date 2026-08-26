@@ -40,6 +40,11 @@ void SpectrumWidget::setPlaceholder(const QString& text) {
     update();
 }
 
+void SpectrumWidget::setColorIndex(int colorIndex) {
+    _colorIndex = colorIndex;
+    update();
+}
+
 QSize SpectrumWidget::minimumSizeHint() const {
     return QSize(200, 48);
 }
@@ -76,7 +81,8 @@ void SpectrumWidget::paintEvent(QPaintEvent* /*event*/) {
     int labelRow = 0;
     for (size_t ch = 0; ch < _mags.size(); ++ch) {
         const auto& row = _mags[ch];
-        const QColor color = kChannelColors[ch % kChannelColorCount];
+        const int colorIdx = _colorIndex >= 0 ? _colorIndex : static_cast<int>(ch);
+        const QColor color = kChannelColors[colorIdx % kChannelColorCount];
         QPolygonF points;
         points.reserve(static_cast<int>(row.size()));
         for (size_t i = 0; i < row.size() && i < _freqs.size(); ++i) {

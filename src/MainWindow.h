@@ -37,8 +37,9 @@ class WaveformWidget;
 // a synchronized multi start/stop toggle, paged EEG (+ ECG / BRTH) or EMG bio
 // panel, setParam controls, debug log and bin recording toggles, auto
 // reconnect, the bin replay family (single + synchronized group replay), a
-// Live Filter band combo for the bio waveforms, and an FFT spectrum strip
-// below the 2D waveform. The window title carries the demo's DEMO_VERSION.
+// Live Filter band combo for the bio waveforms, an FFT spectrum strip below
+// the 2D waveform, and per-channel FFT spectra on the EMG/EEG bio rows.
+// The window title carries the demo's DEMO_VERSION.
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -244,6 +245,21 @@ private:
     std::vector<std::vector<float>> _fftMags;
     qint64 _fftLastSubmitMs = 0;
 
+    // Per-channel spectra in the EMG/EEG bio rows: shares the FFT worker
+    // above; _bioFftChannels is the current row -> ring channel binding
+    // (-1 = no spectrum on that row), _bioFftEpoch invalidates results
+    // computed before the latest layoutBio.
+    void maybeSubmitBioFft(const std::shared_ptr<DeviceState>& st);
+    void pollBioFftResult();
+    bool _bioFftReady = false;
+    int _bioFftResultEpoch = -1;
+    QString _bioFftMac;
+    std::vector<float> _bioFftFreqs;
+    std::vector<std::vector<float>> _bioFftMags;
+    qint64 _bioFftLastSubmitMs = 0;
+    int _bioFftEpoch = 0;
+    QVector<int> _bioFftChannels;
+
     // Widgets
     QListWidget* _deviceList = nullptr;
     QPushButton* _btnScan = nullptr;
@@ -285,13 +301,15 @@ private:
     QLabel* _gestureLabel = nullptr;
 
     // Bio panel: 8 stacked waveforms showing EMG channels, or paged EEG
-    // channels plus ECG / BRTH on the trailing widgets.
+    // channels plus ECG / BRTH on the trailing widgets. EMG/EEG channel rows
+    // split 50/50: per-channel spectrum on the left, waveform on the right.
     QLabel* _bioTitleLabel = nullptr;
     QWidget* _pageControls = nullptr;
     QPushButton* _btnPrevPage = nullptr;
     QPushButton* _btnNextPage = nullptr;
     QLabel* _pageLabel = nullptr;
     QVector<WaveformWidget*> _bioWidgets;
+    QVector<SpectrumWidget*> _bioSpectra;
     int _bioPage = 0;
     // Per-widget impedance binding (set by layoutBio) for the side texts.
     struct BioTarget {

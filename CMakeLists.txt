@@ -4,7 +4,7 @@ project(DemoEMG LANGUAGES CXX)
 
 # Standalone Qt demo for the sensor C++ SDK, shipped with prebuilt SDK
 # libraries for every supported platform (see lib/). Windows x64/x86, Linux
-# x86_64/x86, macOS arm64, iOS and Android (4 ABIs) are supported; iOS/Android
+# x86_64/x86/arm64, macOS arm64, iOS and Android (4 ABIs) are supported; iOS/Android
 # use the phone tab layout.
 
 set(CMAKE_CXX_STANDARD 17)
@@ -30,7 +30,7 @@ endif()
 # The package layout:
 #   include/                                  public SDK headers
 #   lib/windows/<x64|x86>/<Debug|Release>/    sensor.dll/.lib (x86: sensor32.*)
-#   lib/linux/<x86_64|x86>/libsensor.so
+#   lib/linux/<x86_64|x86|arm64>/libsensor.so
 #   lib/android/<abi>/libsensor.so            arm64-v8a, armeabi-v7a, x86, x86_64
 #   lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator
 #   lib/macos/libsensor.dylib                 macOS (universal, @rpath)
@@ -55,8 +55,8 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SENSOR_SDK_LINUX_ARCH "x86_64" CACHE STRING
-        "Prebuilt SDK library on Linux: x86_64 or x86")
-    set_property(CACHE SENSOR_SDK_LINUX_ARCH PROPERTY STRINGS x86_64 x86)
+        "Prebuilt SDK library on Linux: x86_64, x86 or arm64")
+    set_property(CACHE SENSOR_SDK_LINUX_ARCH PROPERTY STRINGS x86_64 x86 arm64)
 endif()
 
 if(APPLE)
