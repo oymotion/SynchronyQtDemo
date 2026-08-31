@@ -48,7 +48,7 @@ const int CMD_TIMEOUT_MS = 5000;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.10";
+const char* const DEMO_VERSION = "0.1.11";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
@@ -1745,14 +1745,15 @@ void MainWindow::onNextPage() {
 
 void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
     _bioTargets.clear();
-    // Row spectrum binding: channel >= 0 shows the row's spectrum, -1 hides
-    // it (the waveform then spans the full row width).
+    // Row spectrum binding: buffer != nullptr shows the row's spectrum
+    // (computed with that buffer's own sample rate), nullptr hides it (the
+    // waveform then spans the full row width).
     ++_bioFftEpoch;
-    _bioFftChannels = QVector<int>(_bioWidgets.size(), -1);
-    auto setBioSpectrum = [this](int row, int channel, const QString& label) {
-        if (channel >= 0) {
-            _bioFftChannels[row] = channel;
-            _bioSpectra[row]->setColorIndex(channel);
+    _bioFftRows = QVector<BioFftBinding>(_bioWidgets.size());
+    auto setBioSpectrum = [this](int row, const RingBuffer* buf, int channel, int colorIndex, const QString& label) {
+        if (buf != nullptr && channel >= 0) {
+            _bioFftRows[row] = {buf, channel};
+            _bioSpectra[row]->setColorIndex(colorIndex);
             _bioSpectra[row]->setLabels({label});
             _bioSpectra[row]->setPlaceholder(QString());
             _bioSpectra[row]->setVisible(true);
@@ -1774,21 +1775,23 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                 _bioWidgets[i]->setSource(&st->emg, &st->bufMutex, i);
                 _bioWidgets[i]->setLabels({QStringLiteral("EMG-%1").arg(i + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, i, QStringLiteral("EMG-%1").arg(i + 1));
+                setBioSpectrum(i, &st->emg, i, i, QStringLiteral("EMG-%1").arg(i + 1));
                 _bioTargets.append({&st->emgImpedance, i});
             } else {
                 _bioWidgets[i]->setSource(nullptr, nullptr, i);
                 _bioWidgets[i]->setLabels({});
                 _bioWidgets[i]->setPlaceholder(waiting);
                 _bioWidgets[i]->setSideText(QString(), Qt::white);
-                setBioSpectrum(i, -1, QString());
+                setBioSpectrum(i, nullptr, -1, -1, QString());
                 _bioTargets.append(BioTarget{});
             }
         }
     } else if (kind == DeviceState::BioKind::EEG) {
         // EEG device: channels per page = 8 - hasECG - hasBRTH; the current
         // page's EEG channels fill the leading widgets, ECG takes the last
-        // widget (second-to-last when BRTH follows), BRTH the last.
+        // widget (second-to-last when BRTH follows), BRTH the last. EEG
+        // channel rows and the ECG row split 50/50 with a spectrum on the
+        // left; BRTH / unused rows stay full-width.
         _bioTitleLabel->setText(QStringLiteral("EEG + ECG + BRTH Waveform"));
         const bool hasECG = st->info.ECGChannelCount > 0 || st->ecg.allocated;
         const bool hasBRTH = st->info.BRTHChannelCount > 0 || st->brth.allocated;
@@ -1808,19 +1811,19 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                 _bioWidgets[i]->setSource(&st->eeg, &st->bufMutex, eegCh);
                 _bioWidgets[i]->setLabels({QStringLiteral("EEG-%1").arg(eegCh + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, eegCh, QStringLiteral("EEG-%1").arg(eegCh + 1));
+                setBioSpectrum(i, &st->eeg, eegCh, eegCh, QStringLiteral("EEG-%1").arg(eegCh + 1));
                 _bioTargets.append({&st->eegImpedance, eegCh});
             } else if (hasECG && i == ecgIndex && st->ecg.allocated) {
                 _bioWidgets[i]->setSource(&st->ecg, &st->bufMutex, 0);
                 _bioWidgets[i]->setLabels({QStringLiteral("ECG")});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, -1, QString());
+                setBioSpectrum(i, &st->ecg, 0, 0, QStringLiteral("ECG"));
                 _bioTargets.append({&st->ecgImpedance, 0});
             } else if (hasBRTH && i == brthIndex && st->brth.allocated) {
                 _bioWidgets[i]->setSource(&st->brth, &st->bufMutex, 0);
                 _bioWidgets[i]->setLabels({QStringLiteral("BRTH")});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, -1, QString());
+                setBioSpectrum(i, nullptr, -1, -1, QString());
                 _bioTargets.append({&st->brthImpedance, 0});
             } else {
                 _bioWidgets[i]->setSource(nullptr, nullptr, i);
@@ -1830,7 +1833,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                 const bool noSuchChannel = i < perPage && eegCh >= total;
                 _bioWidgets[i]->setPlaceholder(noSuchChannel ? QString() : waiting);
                 _bioWidgets[i]->setSideText(QString(), Qt::white);
-                setBioSpectrum(i, -1, QString());
+                setBioSpectrum(i, nullptr, -1, -1, QString());
                 _bioTargets.append(BioTarget{});
             }
         }
@@ -1838,20 +1841,23 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
         // PPG device: fixed 6 plots on the leading widgets: 2x EEG fp1/fp2 +
         // 2x PPG red/ir led + 2x SpO2 spo2/heart_rate; the trailing widgets
         // stay blank. No paging; the two EEG plots carry impedance side
-        // texts like the EEG mode.
+        // texts like the EEG mode. The EEG/PPG rows split 50/50 with a
+        // spectrum on the left; the SpO2 rows (low-rate derived values) stay
+        // full-width.
         _bioTitleLabel->setText(QStringLiteral("EEG + PPG + SpO2 Waveform"));
         const struct {
             RingBuffer DeviceState::*buffer;
             int channel;
             const char* label;
             bool isEeg;
+            bool hasFft;
         } plotConfig[] = {
-            {&DeviceState::eeg, 0, "fp1", true},
-            {&DeviceState::eeg, 1, "fp2", true},
-            {&DeviceState::ppg, 0, "red_led", false},
-            {&DeviceState::ppg, 1, "ir_led", false},
-            {&DeviceState::spo2, 0, "spo2", false},
-            {&DeviceState::spo2, 1, "heart_rate", false},
+            {&DeviceState::eeg, 0, "fp1", true, true},
+            {&DeviceState::eeg, 1, "fp2", true, true},
+            {&DeviceState::ppg, 0, "red_led", false, true},
+            {&DeviceState::ppg, 1, "ir_led", false, true},
+            {&DeviceState::spo2, 0, "spo2", false, false},
+            {&DeviceState::spo2, 1, "heart_rate", false, false},
         };
         const int plotCount = static_cast<int>(sizeof(plotConfig) / sizeof(plotConfig[0]));
         for (int i = 0; i < _bioWidgets.size(); ++i) {
@@ -1865,7 +1871,11 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                     _bioWidgets[i]->setSource(buf, &st->bufMutex, cfg.channel, i);
                     _bioWidgets[i]->setLabels({QString::fromLatin1(cfg.label)});
                     _bioWidgets[i]->setPlaceholder(QString());
-                    setBioSpectrum(i, -1, QString());
+                    if (cfg.hasFft) {
+                        setBioSpectrum(i, buf, cfg.channel, i, QString::fromLatin1(cfg.label));
+                    } else {
+                        setBioSpectrum(i, nullptr, -1, -1, QString());
+                    }
                     _bioTargets.append(cfg.isEeg ? BioTarget{&st->eegImpedance, cfg.channel}
                                                  : BioTarget{});
                     bound = true;
@@ -1878,7 +1888,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                 // trailing widgets stay blank.
                 _bioWidgets[i]->setPlaceholder(i < plotCount ? waiting : QString());
                 _bioWidgets[i]->setSideText(QString(), Qt::white);
-                setBioSpectrum(i, -1, QString());
+                setBioSpectrum(i, nullptr, -1, -1, QString());
                 _bioTargets.append(BioTarget{});
             }
         }
@@ -1889,7 +1899,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
             _bioWidgets[i]->setLabels({});
             _bioWidgets[i]->setPlaceholder(waiting);
             _bioWidgets[i]->setSideText(QString(), Qt::white);
-            setBioSpectrum(i, -1, QString());
+            setBioSpectrum(i, nullptr, -1, -1, QString());
             _bioTargets.append(BioTarget{});
         }
     }
@@ -2561,53 +2571,58 @@ void MainWindow::pollFftResult() {
     _spectrum->setResult(_fftFreqs, _fftMags);
 }
 
-// Per-channel spectra of the EMG/EEG bio rows: the bound rows' ring channels
-// are snapshotted oldest -> newest and computed on the shared FFT worker;
-// results whose device or bio layout no longer match are dropped.
+// Per-row spectra of the bio rows: the bound rows' ring channels are
+// snapshotted oldest -> newest and computed on the shared FFT worker, each
+// row with its own buffer's sample rate; results whose device or bio layout
+// no longer match are dropped.
 void MainWindow::maybeSubmitBioFft(const std::shared_ptr<DeviceState>& st) {
     if (!st || _fftBusy.load()) {
         return;
     }
     const auto kind = st->bioKind();
-    if (kind != DeviceState::BioKind::EMG && kind != DeviceState::BioKind::EEG) {
+    if (kind == DeviceState::BioKind::None) {
         return;
     }
-    QVector<int> channels;
-    for (const int c : _bioFftChannels) {
-        if (c >= 0) {
-            channels.append(c);
+    bool anyBinding = false;
+    for (const auto& b : _bioFftRows) {
+        if (b.buffer != nullptr) {
+            anyBinding = true;
+            break;
         }
     }
-    if (channels.isEmpty()) {
+    if (!anyBinding) {
         return;
     }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (now - _bioFftLastSubmitMs < FFT_UPDATE_INTERVAL_MS) {
         return;
     }
-    RingBuffer* buf = kind == DeviceState::BioKind::EMG ? &st->emg : &st->eeg;
-    std::vector<std::vector<float>> snapshot;
-    float rate = 0;
+    std::vector<int> rows;
+    std::vector<std::vector<float>> snapshots;
+    std::vector<float> rates;
     {
         QMutexLocker lock(&st->bufMutex);
-        if (!buf->allocated || buf->length < 16 || buf->sampleRate <= 0) {
-            return;
-        }
-        for (const int c : channels) {
-            if (c >= buf->channels) {
-                return;
+        for (int row = 0; row < _bioFftRows.size(); ++row) {
+            const auto& b = _bioFftRows[row];
+            const RingBuffer* buf = b.buffer;
+            // A row whose buffer is not ready yet is skipped without
+            // affecting the other rows.
+            if (buf == nullptr || !buf->allocated || buf->length < 16
+                || buf->sampleRate <= 0 || b.channel >= buf->channels) {
+                continue;
             }
-        }
-        rate = buf->sampleRate;
-        // Reassemble the circular buffer oldest -> newest.
-        snapshot.resize(channels.size());
-        for (int r = 0; r < channels.size(); ++r) {
-            auto& row = snapshot[r];
-            row.resize(buf->length);
+            // Reassemble the circular buffer oldest -> newest.
+            std::vector<float> snapshot(buf->length);
             for (int i = 0; i < buf->length; ++i) {
-                row[i] = buf->samples[channels[r]][(buf->writeIndex + i) % buf->length];
+                snapshot[i] = buf->samples[b.channel][(buf->writeIndex + i) % buf->length];
             }
+            rows.push_back(row);
+            snapshots.push_back(std::move(snapshot));
+            rates.push_back(buf->sampleRate);
         }
+    }
+    if (rows.empty()) {
+        return;
     }
     _bioFftLastSubmitMs = now;
     _fftBusy = true;
@@ -2616,14 +2631,21 @@ void MainWindow::maybeSubmitBioFft(const std::shared_ptr<DeviceState>& st) {
     }
     const int epoch = _bioFftEpoch;
     const QString mac = st->mac;
-    _fftThread = std::thread([this, snapshot = std::move(snapshot), rate, epoch, mac] {
-        std::vector<float> freqs;
-        std::vector<std::vector<float>> mags;
-        computeSpectrum(snapshot, rate, freqs, mags);
+    _fftThread = std::thread([this, rows, snapshots = std::move(snapshots), rates, epoch, mac] {
+        std::vector<std::vector<float>> allFreqs(rows.size());
+        std::vector<std::vector<float>> allMags(rows.size());
+        for (size_t k = 0; k < rows.size(); ++k) {
+            std::vector<float> freqs;
+            std::vector<std::vector<float>> mags;
+            computeSpectrum({snapshots[k]}, rates[k], freqs, mags);
+            allFreqs[k] = std::move(freqs);
+            allMags[k] = mags.empty() ? std::vector<float>() : std::move(mags[0]);
+        }
         {
             QMutexLocker lock(&_fftMutex);
-            _bioFftFreqs = std::move(freqs);
-            _bioFftMags = std::move(mags);
+            _bioFftResultRows = rows;
+            _bioFftResultFreqs = std::move(allFreqs);
+            _bioFftResultMags = std::move(allMags);
             _bioFftResultEpoch = epoch;
             _bioFftMac = mac;
             _bioFftReady = true;
@@ -2644,15 +2666,13 @@ void MainWindow::pollBioFftResult() {
     if (!st || _bioFftMac != st->mac || _bioFftResultEpoch != _bioFftEpoch) {
         return;
     }
-    int row = 0;
-    for (int i = 0; i < _bioSpectra.size(); ++i) {
-        if (i >= _bioFftChannels.size() || _bioFftChannels[i] < 0) {
+    for (size_t k = 0; k < _bioFftResultRows.size(); ++k) {
+        const int row = _bioFftResultRows[k];
+        if (row >= _bioSpectra.size() || row >= _bioFftRows.size()
+            || _bioFftRows[row].buffer == nullptr || _bioFftResultMags[k].empty()) {
             continue;
         }
-        if (row < static_cast<int>(_bioFftMags.size())) {
-            _bioSpectra[i]->setResult(_bioFftFreqs, {_bioFftMags[static_cast<size_t>(row)]});
-        }
-        ++row;
+        _bioSpectra[row]->setResult(_bioFftResultFreqs[k], {_bioFftResultMags[k]});
     }
 }
 

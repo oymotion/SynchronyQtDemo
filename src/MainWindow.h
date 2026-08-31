@@ -245,20 +245,27 @@ private:
     std::vector<std::vector<float>> _fftMags;
     qint64 _fftLastSubmitMs = 0;
 
-    // Per-channel spectra in the EMG/EEG bio rows: shares the FFT worker
-    // above; _bioFftChannels is the current row -> ring channel binding
-    // (-1 = no spectrum on that row), _bioFftEpoch invalidates results
-    // computed before the latest layoutBio.
+    // Per-row spectra in the bio rows (EMG/EEG channel rows, the EEG page's
+    // ECG row, the PPG page's EEG/PPG rows): shares the FFT worker above;
+    // _bioFftRows is the current row -> ring binding (buffer == nullptr = no
+    // spectrum on that row) and each row computes with its own buffer's
+    // sample rate (the ECG/PPG rows may differ from the EEG rows);
+    // _bioFftEpoch invalidates results computed before the latest layoutBio.
     void maybeSubmitBioFft(const std::shared_ptr<DeviceState>& st);
     void pollBioFftResult();
+    struct BioFftBinding {
+        const RingBuffer* buffer = nullptr;
+        int channel = 0;
+    };
     bool _bioFftReady = false;
     int _bioFftResultEpoch = -1;
     QString _bioFftMac;
-    std::vector<float> _bioFftFreqs;
-    std::vector<std::vector<float>> _bioFftMags;
+    std::vector<int> _bioFftResultRows;
+    std::vector<std::vector<float>> _bioFftResultFreqs;
+    std::vector<std::vector<float>> _bioFftResultMags;
     qint64 _bioFftLastSubmitMs = 0;
     int _bioFftEpoch = 0;
-    QVector<int> _bioFftChannels;
+    QVector<BioFftBinding> _bioFftRows;
 
     // Widgets
     QListWidget* _deviceList = nullptr;
@@ -301,8 +308,9 @@ private:
     QLabel* _gestureLabel = nullptr;
 
     // Bio panel: 8 stacked waveforms showing EMG channels, or paged EEG
-    // channels plus ECG / BRTH on the trailing widgets. EMG/EEG channel rows
-    // split 50/50: per-channel spectrum on the left, waveform on the right.
+    // channels plus ECG / BRTH on the trailing widgets. EMG/EEG channel rows,
+    // the EEG page's ECG row and the PPG page's EEG/PPG rows split 50/50:
+    // per-row spectrum on the left, waveform on the right.
     QLabel* _bioTitleLabel = nullptr;
     QWidget* _pageControls = nullptr;
     QPushButton* _btnPrevPage = nullptr;

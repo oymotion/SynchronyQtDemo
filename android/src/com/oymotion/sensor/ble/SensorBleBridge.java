@@ -21,6 +21,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -79,6 +80,18 @@ public class SensorBleBridge {
 
     private BluetoothLeScanner scanner;
     private ScanCallback scanCallback;
+
+    // Deferred stop + throttle backoff: the SDK stops and restarts scanning on
+    // every scan round, but Android throttles scan starts (more than 5 starts
+    // within 30 s fails with SCAN_FAILED_SCANNING_TOO_FREQUENTLY, and on stacks
+    // that also count the failed attempts the window never slides out). The
+    // real stop is therefore deferred briefly so a round-boundary stop+start
+    // pair keeps the one running scan, and after a failure further starts are
+    // suppressed until the window has passed.
+    private static final long SCAN_STOP_DEFER_MS = 1500;
+    private static final long SCAN_FAILURE_BACKOFF_MS = 30000;
+    private Runnable pendingScanStop;
+    private long lastScanFailElapsedMs;  // SystemClock.elapsedRealtime(), 0 = none
 
     private final Map<String, BluetoothGatt> connectedGatts = new ConcurrentHashMap<>();
     private final Map<String, GattCallbacks> gattCallbacks = new ConcurrentHashMap<>();
@@ -169,6 +182,27 @@ public class SensorBleBridge {
     public void startScan(List<ScanFilter> filters, ScanSettings settings) {
         if (bluetoothAdapter == null) return;
         scanHandler.post(() -> {
+            // A round-boundary stop+start pair lands here while the deferred
+            // stop is still pending: cancel it and keep the one running scan
+            // instead of paying a fresh startScan against the throttle quota.
+            if (pendingScanStop != null) {
+                scanHandler.removeCallbacks(pendingScanStop);
+                pendingScanStop = null;
+                if (scanner != null && scanCallback != null && bluetoothAdapter.isEnabled()) {
+                    return;
+                }
+                scanner = null;
+                scanCallback = null;
+            }
+            if (lastScanFailElapsedMs != 0
+                    && SystemClock.elapsedRealtime() - lastScanFailElapsedMs < SCAN_FAILURE_BACKOFF_MS) {
+                // Still inside the failure backoff: skip the start (on stacks
+                // that count failed attempts a retry would keep the throttle
+                // window alive forever) and report the failure so the native
+                // side keeps serving its last scan results.
+                nativeOnScanFailed(ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY);
+                return;
+            }
             scanner = bluetoothAdapter.getBluetoothLeScanner();
             if (scanner == null) return;
             scanCallback = new ScanCallback() {
@@ -201,8 +235,13 @@ public class SensorBleBridge {
                     // (e.g. SCAN_FAILED_SCANNING_TOO_FREQUENTLY when Android
                     // throttles scan starts).
                     scanHandler.post(() -> {
+                        // A failure for a scan that was already stopped (or
+                        // superseded) is stale: it must not drop the current
+                        // scan nor refresh the backoff timestamp.
+                        if (scanCallback != this) return;
                         scanner = null;
                         scanCallback = null;
+                        lastScanFailElapsedMs = SystemClock.elapsedRealtime();
                         nativeOnScanFailed(errorCode);
                     });
                 }
@@ -218,11 +257,25 @@ public class SensorBleBridge {
     @SuppressWarnings("unused")
     public void stopScan() {
         scanHandler.post(() -> {
-            if (scanner != null && scanCallback != null) {
-                scanner.stopScan(scanCallback);
-            }
-            scanner = null;
-            scanCallback = null;
+            if (scanner == null || scanCallback == null || pendingScanStop != null) return;
+            // Defer the real stop briefly: a follow-up startScan within the
+            // window cancels this and keeps the running scan, so a continuous
+            // scanning session costs one startScan against the throttle quota
+            // instead of one per scan round.
+            final BluetoothLeScanner activeScanner = scanner;
+            final ScanCallback activeCallback = scanCallback;
+            pendingScanStop = () -> {
+                pendingScanStop = null;
+                if (scanCallback != activeCallback) return;
+                try {
+                    activeScanner.stopScan(activeCallback);
+                } catch (IllegalStateException ignored) {
+                    // Bluetooth was turned off meanwhile; the scan is dead.
+                }
+                scanner = null;
+                scanCallback = null;
+            };
+            scanHandler.postDelayed(pendingScanStop, SCAN_STOP_DEFER_MS);
         });
     }
 
@@ -234,6 +287,18 @@ public class SensorBleBridge {
         if (device == null) return;
         Handler deviceHandler = handlerFor(address);
         deviceHandler.post(() -> {
+            // This runnable is serialized with any pending teardown on the
+            // same device thread: if a previous gatt for this address is
+            // still around (its disconnect/close has not finished), the new
+            // connectGatt could attach to the half-closed client interface
+            // and come back with an instant stale "connected" plus an empty
+            // or failed service discovery. Close the stale one first.
+            BluetoothGatt stale = connectedGatts.remove(address);
+            gattCallbacks.remove(address);
+            if (stale != null) {
+                stale.disconnect();
+                stale.close();
+            }
             GattCallbacks callbacks = new GattCallbacks(address);
             gattCallbacks.put(address, callbacks);
             // The Handler overload delivers every GATT callback for this
@@ -340,16 +405,29 @@ public class SensorBleBridge {
 
     private class GattCallbacks extends BluetoothGattCallback {
         private final String address;
+        private boolean discoveryRetried;
 
         GattCallbacks(String address) {
             this.address = address;
         }
 
+        // Identity guard: events from a gatt that was replaced by a newer
+        // connectGatt (its teardown was still in flight) must not touch the
+        // new connection's state.
+        private boolean isCurrent() {
+            return gattCallbacks.get(address) == this;
+        }
+
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
-            boolean connected = newState == BluetoothProfile.STATE_CONNECTED;
-            nativeOnConnectionStateChanged(address, connected ? 1 : 0);
+            if (!isCurrent()) {
+                gatt.close();
+                return;
+            }
+            boolean connected = status == BluetoothGatt.GATT_SUCCESS
+                && newState == BluetoothProfile.STATE_CONNECTED;
             if (connected) {
+                nativeOnConnectionStateChanged(address, 1);
                 // SimpleBLE flow: negotiate a larger MTU and start service
                 // discovery right after the ACL comes up. The C++ side only
                 // reports "connected" to the SDK once discovery finishes
@@ -362,12 +440,30 @@ public class SensorBleBridge {
                 gattCallbacks.remove(address);
                 gatt.close();
                 // The link is down for good; retire the per-device thread.
+                // Everything is closed BEFORE reporting to native: the native
+                // disconnect() wait unblocks inside this call, and a reconnect
+                // issued right after must not find a half-closed client
+                // interface.
                 releaseHandler(address);
+                nativeOnConnectionStateChanged(address, 0);
             }
         }
 
         @Override
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            if (!isCurrent()) return;
+            if (status != BluetoothGatt.GATT_SUCCESS || gatt.getServices().isEmpty()) {
+                // A discovery issued while the previous link was still
+                // closing can come back failed or with an empty tree; retry
+                // once before giving up. When it keeps failing nothing is
+                // reported and the native connect wait times out, which
+                // fails only this one connect attempt.
+                if (!discoveryRetried) {
+                    discoveryRetried = true;
+                    gatt.discoverServices();
+                }
+                return;
+            }
             List<ServiceInfo> services = new ArrayList<>();
             for (BluetoothGattService service : gatt.getServices()) {
                 List<CharacteristicInfo> chars = new ArrayList<>();
@@ -387,12 +483,14 @@ public class SensorBleBridge {
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+            if (!isCurrent()) return;
             nativeOnCharacteristicChanged(address, characteristic.getService().getUuid().toString(),
                 characteristic.getUuid().toString(), characteristic.getValue());
         }
 
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
+            if (!isCurrent()) return;
             nativeOnMtuChanged(address, mtu);
             // SimpleBLE parity: a discoverServices() issued together with
             // requestMtu() is silently dropped by some Android stacks while
@@ -407,11 +505,13 @@ public class SensorBleBridge {
         // parameter updates to it. The interval arrives in 1.25 ms units and
         // the supervision timeout in 10 ms units; conversion happens natively.
         public void onConnectionUpdated(BluetoothGatt gatt, int interval, int latency, int timeout, int status) {
+            if (!isCurrent()) return;
             nativeOnConnectionUpdated(address, interval, latency, timeout);
         }
 
         @Override
         public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+            if (!isCurrent()) return;
             if (status != BluetoothGatt.GATT_SUCCESS) return;
             if (!descriptor.getUuid().toString().equalsIgnoreCase("00002902-0000-1000-8000-00805f9b34fb")) return;
             boolean enabled = Arrays.equals(descriptor.getValue(), BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
