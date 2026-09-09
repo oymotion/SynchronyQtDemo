@@ -42,13 +42,13 @@
 #endif
 
 namespace {
-const int SCAN_DEVICE_PERIOD_MS = 3000;
+const int SCAN_DEVICE_PERIOD_MS = 6000;
 const int PACKAGE_COUNT = 32;
 const int CMD_TIMEOUT_MS = 5000;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.11";
+const char* const DEMO_VERSION = "0.1.19";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
@@ -63,17 +63,54 @@ const int MULTI_STOP_TIMEOUT_MS = 10000;
 const char* const kNtfKeys[] = {"NTF_EEG", "NTF_EMG", "NTF_GEST", "NTF_PPG", "NTF_SPO2", "NTF_IMU"};
 const char* const kFilterKeys[] = {"FILTER_50HZ", "FILTER_60HZ", "FILTER_HPF", "FILTER_LPF"};
 // EEG Sample Rate radio candidates.
-const int kSampleRateCandidates[] = {250, 500, 1000, 2000};
+const QVector<int> kSampleRateCandidates = {250, 500, 1000, 2000};
+// EMG/IMU/PPG Sample Rate radio candidates.
+const QVector<int> kEmgSampleRateCandidates = {500, 1000};
+const QVector<int> kImuSampleRateCandidates = {50, 100, 200, 250, 400, 500, 1000, 2000};
+const QVector<int> kPpgSampleRateCandidates = {50, 100, 200, 400, 800, 1000, 1600, 3200};
+
+// Parses a "|"-separated sample-rate candidate list answer (empty on error /
+// unsupported).
+QVector<int> parseRateOptions(const QString& listResult) {
+    QVector<int> options;
+    if (!listResult.startsWith(QStringLiteral("Error"))) {
+        const QStringList items = listResult.split(QLatin1Char('|'), Qt::SkipEmptyParts);
+        for (const QString& item : items) {
+            bool ok = false;
+            const int rate = item.toInt(&ok);
+            if (ok) {
+                options.append(rate);
+            }
+        }
+    }
+    return options;
+}
+
+// Parses a current-rate answer (0 on error).
+int parseRateCurrent(const QString& rateResult) {
+    if (!rateResult.startsWith(QStringLiteral("Error"))) {
+        bool ok = false;
+        const int rate = rateResult.toInt(&ok);
+        if (ok) {
+            return rate;
+        }
+    }
+    return 0;
+}
 
 // Device-info row texts.
 QString linkText(const sensor::DeviceInfo& info) {
+    const QString backend = QString::fromStdString(info.backend);
+    const QString backendPart =
+        backend.isEmpty() ? QString() : QStringLiteral(" | backend %1").arg(backend);
     if (info.PeripheralLatency < 0 || info.ConnectionIntervalMs <= 0) {
-        return QStringLiteral("Link: --");
+        return QStringLiteral("Link: --") + backendPart;
     }
     return QStringLiteral("Link: %1ms / latency %2 / timeout %3ms")
-        .arg(info.ConnectionIntervalMs)
-        .arg(info.PeripheralLatency)
-        .arg(info.SupervisionTimeoutMs);
+               .arg(info.ConnectionIntervalMs)
+               .arg(info.PeripheralLatency)
+               .arg(info.SupervisionTimeoutMs)
+           + backendPart;
 }
 
 QString mtuText(const sensor::DeviceInfo& info) {
@@ -89,9 +126,9 @@ int disconnectedState() { return static_cast<int>(sensor::BLEDevice::State::Disc
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    _controller = sensor::SensorController::getInstance();
+    _controller = std::make_unique<sensor::SensorController>();
     _bridge = std::make_shared<SdkBridge>();
-    _controller->setDelegate(_bridge);
+    _controller->setCallbacks(_bridge->controllerCallbacks());
 
     setupUi();
 
@@ -221,9 +258,16 @@ QWidget* MainWindow::buildDevicePage() {
     _btnMultiReplay = new QPushButton(QStringLiteral("Multi Replay Bin"), page);
     connect(_btnMultiReplay, &QPushButton::clicked, this, &MainWindow::onMultiReplayClicked);
     devHeader->addWidget(_btnMultiReplay);
-    // SDK version next to the scan controls (also shown in the window title).
-    _sdkLabel = new QLabel(
-        QStringLiteral("SDK: %1").arg(QString::fromStdString(_controller->getVersion())), page);
+    _btnCheckDongle = new QPushButton(QStringLiteral("Check Setup Dongle"), page);
+    connect(_btnCheckDongle, &QPushButton::clicked, this, &MainWindow::onCheckDongleClicked);
+    QFont dongleFont = _btnCheckDongle->font();
+    dongleFont.setBold(true);
+    _btnCheckDongle->setFont(dongleFont);
+    devHeader->addWidget(_btnCheckDongle);
+    // SDK version + active BLE backend next to the scan controls (the
+    // version is also shown in the window title).
+    _sdkLabel = new QLabel(page);
+    refreshSdkLabel();
     devHeader->addWidget(_sdkLabel);
     devCol->addLayout(devHeader);
     _deviceList = new QListWidget(page);
@@ -519,20 +563,18 @@ QWidget* MainWindow::buildSettingsPage() {
         filterLayout->addWidget(cb);
     }
 
-    auto* rateGroup = new QGroupBox(QStringLiteral("EEG Sample Rate"), page);
-    auto* rateLayout = new QHBoxLayout(rateGroup);
-    _sampleRateGroup = new QButtonGroup(page);
-    for (int rate : kSampleRateCandidates) {
-        auto* rb = new QRadioButton(QStringLiteral("%1 Hz").arg(rate), page);
-        // Exclusivity comes from the button group so the refresh path can
-        // uncheck every radio.
-        rb->setAutoExclusive(false);
-        rb->setEnabled(false);
-        connect(rb, &QRadioButton::toggled, this, [this](bool) { onSampleRateToggled(); });
-        _sampleRateRadios.insert(rate, rb);
-        _sampleRateGroup->addButton(rb);
-        rateLayout->addWidget(rb);
-    }
+    _rateGroupBox = buildSampleRateGroup(page, QStringLiteral("EEG Sample Rate"),
+                                         kSampleRateCandidates, &_sampleRateRadios,
+                                         &_sampleRateGroup, QStringLiteral("EEG_SAMPLE_RATE"));
+    _emgRateGroupBox = buildSampleRateGroup(page, QStringLiteral("EMG Sample Rate"),
+                                            kEmgSampleRateCandidates, &_emgSampleRateRadios,
+                                            &_emgSampleRateGroup, QStringLiteral("EMG_SAMPLE_RATE"));
+    _imuRateGroupBox = buildSampleRateGroup(page, QStringLiteral("IMU Sample Rate"),
+                                            kImuSampleRateCandidates, &_imuSampleRateRadios,
+                                            &_imuSampleRateGroup, QStringLiteral("IMU_SAMPLE_RATE"));
+    _ppgRateGroupBox = buildSampleRateGroup(page, QStringLiteral("PPG Sample Rate"),
+                                            kPpgSampleRateCandidates, &_ppgSampleRateRadios,
+                                            &_ppgSampleRateGroup, QStringLiteral("PPG_SAMPLE_RATE"));
 
 #ifdef DEMO_MOBILE_UI
     // Portrait phones: stack the groups vertically.
@@ -541,7 +583,10 @@ QWidget* MainWindow::buildSettingsPage() {
     layout->addWidget(debugGroup);
     layout->addWidget(ntfGroup);
     layout->addWidget(filterGroup);
-    layout->addWidget(rateGroup);
+    layout->addWidget(_rateGroupBox);
+    layout->addWidget(_emgRateGroupBox);
+    layout->addWidget(_imuRateGroupBox);
+    layout->addWidget(_ppgRateGroupBox);
 #else
     auto* statusRow = new QHBoxLayout();
     statusRow->addWidget(lostBox, 1);
@@ -551,12 +596,40 @@ QWidget* MainWindow::buildSettingsPage() {
     optionsRow->addWidget(debugGroup, 1);
     optionsRow->addWidget(ntfGroup, 1);
     optionsRow->addWidget(filterGroup, 1);
-    optionsRow->addWidget(rateGroup, 1);
+    optionsRow->addWidget(_rateGroupBox, 1);
+    optionsRow->addWidget(_emgRateGroupBox, 1);
+    optionsRow->addWidget(_imuRateGroupBox, 1);
+    optionsRow->addWidget(_ppgRateGroupBox, 1);
     layout->addLayout(optionsRow);
 #endif
     layout->addStretch();
 
     return page;
+}
+
+QGroupBox* MainWindow::buildSampleRateGroup(QWidget* page, const QString& title,
+                                            const QVector<int>& candidates,
+                                            QMap<int, QRadioButton*>* radios,
+                                            QButtonGroup** group, const QString& key) {
+    auto* box = new QGroupBox(title, page);
+    box->setVisible(false);
+    auto* rateLayout = new QHBoxLayout(box);
+    *group = new QButtonGroup(page);
+    for (int rate : candidates) {
+        auto* rb = new QRadioButton(QStringLiteral("%1 Hz").arg(rate), page);
+        // Exclusivity comes from the button group so the refresh path can
+        // uncheck every radio.
+        rb->setAutoExclusive(false);
+        rb->setEnabled(false);
+        connect(rb, &QRadioButton::toggled, this,
+                [this, rate, radios, group, key](bool checked) {
+                    onSampleRateToggled(rate, checked, *radios, *group, key);
+                });
+        radios->insert(rate, rb);
+        (*group)->addButton(rb);
+        rateLayout->addWidget(rb);
+    }
+    return box;
 }
 
 // -- Scan -------------------------------------------------------------------
@@ -568,7 +641,7 @@ void MainWindow::onStartScan() {
         return;
     }
     appLog(QStringLiteral("User: start scan"));
-    if (!_controller->isScaning()) {
+    if (!_controller->isScanning()) {
         _controller->startScan(SCAN_DEVICE_PERIOD_MS);
     }
     _scanning = true;
@@ -593,6 +666,10 @@ void MainWindow::onBtEnableChanged(bool enabled) {
 void MainWindow::onScanResults(QVector<DeviceEntry> devices) {
     // Every scan-result batch is a full snapshot; merge it into the list in
     // place and keep scanning until the user presses Stop Scan.
+    QSet<QString> present;
+    for (const auto& d : devices) {
+        present.insert(d.mac);
+    }
     for (const auto& d : devices) {
         // No name filter: every scanned device is listed.
         int found = -1;
@@ -607,15 +684,15 @@ void MainWindow::onScanResults(QVector<DeviceEntry> devices) {
             auto* item = new QListWidgetItem(
                 QStringLiteral("RSSI: %1, Name: %2, Address: %3").arg(d.rssi).arg(d.name, d.mac));
             item->setData(Qt::UserRole, d.mac);
-            _deviceList->addItem(item);
+            insertDeviceRowSorted(item, d.rssi);
         } else {
             _discovered[found].rssi = d.rssi;
+            _discovered[found].missedRounds = 0;
             const bool connected = _deviceStates.contains(d.mac);
             updateDeviceItemText(d.mac, connected);
         }
     }
-    // Keep the list ordered by RSSI descending (covers add + update paths).
-    sortDeviceList();
+    evictStaleDevices(present);
     updateButtonStates();
 }
 
@@ -695,18 +772,11 @@ void MainWindow::updateDeviceItemText(const QString& mac, bool connected) {
     }
 }
 
-void MainWindow::sortDeviceList() {
-    // Sort the items by RSSI descending; items without a _discovered entry
-    // (e.g. replay items) sort last. The item's Qt::UserRole holds the MAC
-    // and is left untouched.
-    const QString mac = selectedMac();
-    QVector<QListWidgetItem*> items;
-    items.reserve(_deviceList->count());
-    while (_deviceList->count() > 0) {
-        items.append(_deviceList->takeItem(0));
-    }
-    const auto rssiOf = [this](const QListWidgetItem* item) {
-        const QString itemMac = item->data(Qt::UserRole).toString();
+void MainWindow::insertDeviceRowSorted(QListWidgetItem* item, int rssi) {
+    // Insert by RSSI descending; rows without a _discovered entry (replay
+    // rows) sort last. The item's Qt::UserRole holds the MAC.
+    const auto rssiOf = [this](const QListWidgetItem* it) {
+        const QString itemMac = it->data(Qt::UserRole).toString();
         for (const auto& d : _discovered) {
             if (d.mac == itemMac) {
                 return d.rssi;
@@ -714,27 +784,54 @@ void MainWindow::sortDeviceList() {
         }
         return std::numeric_limits<int>::min();
     };
-    std::stable_sort(items.begin(), items.end(),
-                     [&](const QListWidgetItem* a, const QListWidgetItem* b) {
-                         return rssiOf(a) > rssiOf(b);
-                     });
-    for (auto* item : items) {
-        _deviceList->addItem(item);
-    }
-    // takeItem() drops the current row; restore the previous selection.
-    if (!mac.isEmpty()) {
-        for (int i = 0; i < _deviceList->count(); ++i) {
-            if (_deviceList->item(i)->data(Qt::UserRole).toString() == mac) {
-                _deviceList->setCurrentRow(i);
-                break;
-            }
+    int pos = _deviceList->count();
+    for (int i = 0; i < _deviceList->count(); ++i) {
+        if (rssiOf(_deviceList->item(i)) < rssi) {
+            pos = i;
+            break;
         }
+    }
+    _deviceList->insertItem(pos, item);
+}
+
+void MainWindow::evictStaleDevices(const QSet<QString>& present) {
+    // Rows absent from three consecutive scan rounds are dropped; connected
+    // devices and replay rows are exempt.
+    for (int i = _discovered.size() - 1; i >= 0; --i) {
+        const QString mac = _discovered[i].mac;
+        if (present.contains(mac)) {
+            continue;
+        }
+        if (_replayMacs.contains(mac) || _deviceStates.contains(mac)) {
+            continue;
+        }
+        if (++_discovered[i].missedRounds < 4) {
+            continue;
+        }
+        for (int row = 0; row < _deviceList->count(); ++row) {
+            auto* item = _deviceList->item(row);
+            if (item->data(Qt::UserRole).toString() != mac) {
+                continue;
+            }
+            // An evicted row is never connected, so _currentMac never points
+            // at it; only the visual selection is dropped with the row.
+            const bool wasCurrent = (_deviceList->currentItem() == item);
+            delete _deviceList->takeItem(row);
+            if (wasCurrent) {
+                _deviceList->setCurrentItem(nullptr);
+            }
+            break;
+        }
+        _discovered.removeAt(i);
     }
 }
 
 // -- Connect chain -----------------------------------------------------------
 
 void MainWindow::onConnectClicked() {
+    if (_replayStarting) {
+        return;
+    }
     const QString mac = selectedMac();
     if (mac.isEmpty()) {
         appLog(QStringLiteral("User: connect rejected (no device selected)"), "W");
@@ -758,7 +855,7 @@ void MainWindow::onConnectClicked() {
         _statusLabel->setText(QStringLiteral("Failed to create SensorProfile"));
         return;
     }
-    profile->setDelegate(_bridge);
+    profile->setCallbacks(_bridge->profileCallbacks());
     profile->setAutoReconnect(_chkAutoReconnect->isChecked());
 
     auto st = std::make_shared<DeviceState>(profile);
@@ -777,6 +874,12 @@ void MainWindow::onConnectClicked() {
     // Set after refreshInfoPanel, which rewrites the status.
     _statusLabel->setText(QStringLiteral("Connecting: %1 ...").arg(st->name));
 
+    if (_controller->isScanning()) {
+        _controller->stopScan();
+        _scanning = false;
+        _btnScan->setEnabled(_replayMacs.isEmpty());
+        _btnStopScan->setEnabled(false);
+    }
     if (!profile->isReady()) {
         profile->connect({}); // fire-and-forget; the GUI reacts to state-change signals
     } else {
@@ -790,7 +893,8 @@ void MainWindow::onDisconnectClicked() {
         return;
     }
     appLog(QStringLiteral("User: disconnect %1").arg(st->mac), "I", st);
-    // Grey out every NTF and filter switch as soon as the disconnect starts.
+    // Grey out every NTF, filter and sample-rate control as soon as the
+    // disconnect starts.
     for (auto* cb : _ntfBoxes) {
         cb->setEnabled(false);
     }
@@ -800,7 +904,16 @@ void MainWindow::onDisconnectClicked() {
     for (auto* rb : _sampleRateRadios) {
         rb->setEnabled(false);
     }
-    if (st->profile->getDeviceState() == sensor::BLEDevice::State::Disconnected) {
+    for (auto* rb : _emgSampleRateRadios) {
+        rb->setEnabled(false);
+    }
+    for (auto* rb : _imuSampleRateRadios) {
+        rb->setEnabled(false);
+    }
+    for (auto* rb : _ppgSampleRateRadios) {
+        rb->setEnabled(false);
+    }
+    if (st->profile->getState() == sensor::BLEDevice::State::Disconnected) {
         // The link is already down: run the teardown inline instead of
         // waiting for a Disconnected event.
         onStateChanged(st->mac, disconnectedState());
@@ -820,13 +933,12 @@ void MainWindow::onProfileReady(const QString& mac) {
     }
     if (!st->profile->hasInit()) {
         _statusLabel->setText(QStringLiteral("Initializing %1 ...").arg(st->name));
-        st->profile->init(PACKAGE_COUNT, CMD_TIMEOUT_MS,
-                          [this, mac](bool result, std::string err) {
+        st->profile->init(PACKAGE_COUNT, CMD_TIMEOUT_MS, POWER_REFRESH_PERIOD_MS,
+                          [this, mac](bool result, const std::string& err) {
                               postToGui([this, mac, result, err]() {
                                   continueAfterInit(mac, result, QString::fromStdString(err));
                               });
-                          },
-                          POWER_REFRESH_PERIOD_MS);
+                          });
     } else {
         continueAfterInit(mac, true, QString());
     }
@@ -844,7 +956,7 @@ void MainWindow::continueAfterInit(const QString& mac, bool ok, const QString& e
         return;
     }
     st->profile->fetchDeviceInfo(CMD_TIMEOUT_MS,
-                                 [this, mac](sensor::DeviceInfo info, std::string err) {
+                                 [this, mac](const sensor::DeviceInfo& info, const std::string& err) {
                                      postToGui([this, mac, info, err]() {
                                          continueAfterInfo(mac, info, QString::fromStdString(err));
                                      });
@@ -864,12 +976,12 @@ void MainWindow::continueAfterInfo(const QString& mac, const sensor::DeviceInfo&
         qWarning("[DemoEMG] fetchDeviceInfo failed: %s", qPrintable(err));
     }
     if (!st->profile->hasStartDataNotification()) {
-        st->profile->startDataNotification(CMD_TIMEOUT_MS,
-                                           [this, mac](bool result, std::string err) {
-                                               postToGui([this, mac, result, err]() {
-                                                   continueAfterStart(mac, result, QString::fromStdString(err));
-                                               });
-                                           });
+        st->profile->startData(CMD_TIMEOUT_MS,
+                               [this, mac](bool result, const std::string& err) {
+                                   postToGui([this, mac, result, err]() {
+                                       continueAfterStart(mac, result, QString::fromStdString(err));
+                                   });
+                               });
     } else {
         continueAfterStart(mac, true, QString());
     }
@@ -906,7 +1018,7 @@ void MainWindow::continueAfterStart(const QString& mac, bool ok, const QString& 
     updateButtonStates();
 
     // Fetch the battery level once.
-    st->profile->getBatteryLevel(CMD_TIMEOUT_MS, [this, mac](int result, std::string) {
+    st->profile->getBatteryLevel(CMD_TIMEOUT_MS, [this, mac](int result, const std::string&) {
         postToGui([this, mac, result]() {
             auto st = stateFor(mac);
             if (st && result >= 0
@@ -948,7 +1060,7 @@ void MainWindow::applySessionParams(const std::shared_ptr<DeviceState>& st,
                              return;
                          }
                          st->profile->getParam(5000, "DEBUG_BLE_DATA_PATH",
-                             [this, mac](std::string result, std::string) {
+                             [this, mac](const std::string& result, const std::string&) {
                                  postToGui([this, mac, result]() {
                                      const QString cur = QString::fromStdString(result);
                                      if (!cur.isEmpty() && !cur.startsWith(QStringLiteral("Error"))) {
@@ -971,7 +1083,7 @@ void MainWindow::applySessionParams(const std::shared_ptr<DeviceState>& st,
                              return;
                          }
                          st->profile->getParam(5000, "DEBUG_LOG_PATH",
-                             [this, mac](std::string result, std::string) {
+                             [this, mac](const std::string& result, const std::string&) {
                                  postToGui([this, mac, result]() {
                                      const QString cur = QString::fromStdString(result);
                                      if (!cur.isEmpty() && !cur.startsWith(QStringLiteral("Error"))) {
@@ -1059,7 +1171,7 @@ void MainWindow::drainDataQueue() {
                 // Clone mode: owned deep copy.
                 st->appendData(*item.owned);
             }
-            else if (item.borrowed.channelSamples != nullptr) {
+            else if (item.borrowed.getSamples() != nullptr) {
                 // Zero-copy mode: the queued view borrows the SDK's buffers.
                 st->appendData(item.borrowed);
             }
@@ -1094,6 +1206,12 @@ void MainWindow::onStateChanged(QString mac, int state) {
     st->filterStates.clear();
     st->sampleRateOptions.clear();
     st->sampleRateCurrent = 0;
+    st->emgSampleRateOptions.clear();
+    st->emgSampleRateCurrent = 0;
+    st->imuSampleRateOptions.clear();
+    st->imuSampleRateCurrent = 0;
+    st->ppgSampleRateOptions.clear();
+    st->ppgSampleRateCurrent = 0;
     {
         QMutexLocker lock(&_statesMutex);
         _deviceStates.remove(mac);
@@ -1194,7 +1312,25 @@ void MainWindow::onDeviceInfoUpdate(QString mac) {
     if (st->info.EEGSampleRate > 0 && (int)st->info.EEGSampleRate != st->sampleRateCurrent) {
         st->sampleRateCurrent = (int)st->info.EEGSampleRate;
         if (mac == _currentMac) {
-            setSampleRateChecked(st->sampleRateCurrent);
+            setSampleRateChecked(_sampleRateRadios, _sampleRateGroup, st->sampleRateCurrent);
+        }
+    }
+    if (st->info.EMGSampleRate > 0 && (int)st->info.EMGSampleRate != st->emgSampleRateCurrent) {
+        st->emgSampleRateCurrent = (int)st->info.EMGSampleRate;
+        if (mac == _currentMac) {
+            setSampleRateChecked(_emgSampleRateRadios, _emgSampleRateGroup, st->emgSampleRateCurrent);
+        }
+    }
+    if (st->info.AccSampleRate > 0 && (int)st->info.AccSampleRate != st->imuSampleRateCurrent) {
+        st->imuSampleRateCurrent = (int)st->info.AccSampleRate;
+        if (mac == _currentMac) {
+            setSampleRateChecked(_imuSampleRateRadios, _imuSampleRateGroup, st->imuSampleRateCurrent);
+        }
+    }
+    if (st->info.PpgSampleRate > 0 && (int)st->info.PpgSampleRate != st->ppgSampleRateCurrent) {
+        st->ppgSampleRateCurrent = (int)st->info.PpgSampleRate;
+        if (mac == _currentMac) {
+            setSampleRateChecked(_ppgSampleRateRadios, _ppgSampleRateGroup, st->ppgSampleRateCurrent);
         }
     }
     if (mac == _currentMac) {
@@ -1249,11 +1385,11 @@ void MainWindow::updateReplayItemText(const QString& mac) {
 
 // -- setParam / getParam controls --------------------------------------------
 
-void MainWindow::sendSetParam(const std::shared_ptr<sensor::SensorProfile>& profile,
+void MainWindow::sendSetParam(sensor::SensorProfile* profile,
                               const QString& key, const QString& value,
                               std::function<void(QString, bool)> completion) {
     profile->setParam(CMD_TIMEOUT_MS, key.toStdString(), value.toStdString(),
-                      [this, completion](std::string result, std::string err) {
+                      [this, completion](const std::string& result, const std::string& err) {
                           // Command-outcome failures arrive as all-caps
                           // "ERROR: ..." in the result slot
                           const bool isError = result.rfind("Error", 0) == 0
@@ -1290,6 +1426,7 @@ void MainWindow::onNtfToggled() {
                      if (isError) {
                          QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                               QStringLiteral("Failed to set %1:\n%2").arg(key, msg));
+                         refreshControlStates(currentState());
                          return;
                      }
                      refreshControlStates(currentState());
@@ -1319,6 +1456,7 @@ void MainWindow::onFilterToggled() {
                      if (isError) {
                          QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                               QStringLiteral("Failed to set %1:\n%2").arg(key, msg));
+                         refreshControlStates(currentState());
                          return;
                      }
                      refreshControlStates(currentState());
@@ -1326,30 +1464,38 @@ void MainWindow::onFilterToggled() {
                  });
 }
 
-void MainWindow::onSampleRateToggled() {
-    if (_updatingControls) {
+void MainWindow::onSampleRateToggled(int rate, bool checked,
+                                     const QMap<int, QRadioButton*>& radios,
+                                     QButtonGroup* group, const QString& key) {
+    // Only the checked edge acts; the unchecked edge fires as the previously
+    // checked radio loses the check.
+    if (!checked || _updatingControls) {
         return;
     }
     auto st = currentState();
     if (!st || !st->profile->isReady()) {
         return;
     }
-    auto* rb = qobject_cast<QRadioButton*>(sender());
-    const int rate = _sampleRateRadios.key(rb, 0);
-    // Only the checked edge acts; the unchecked edge fires as the previously
-    // checked radio loses the check.
-    if (rate <= 0 || !rb->isChecked()) {
+    setSampleRateChecked(radios, group, rate);
+    // The setParam runs on the next tick, after the control state settles.
+    QTimer::singleShot(0, this, [this, key, rate]() { applySampleRate(key, rate); });
+}
+
+void MainWindow::applySampleRate(const QString& key, int rate) {
+    auto st = currentState();
+    if (!st || !st->profile->isReady()) {
         return;
     }
     const QString mac = st->mac;
     const QString value = QString::number(rate);
-    sendSetParam(st->profile, QStringLiteral("EEG_SAMPLE_RATE"), value,
-                 [this, mac, value](QString msg, bool isError) {
-                     appLog(QStringLiteral("User: setParam(EEG_SAMPLE_RATE, %1) -> %2").arg(value, msg));
-                     recordSavedParam(mac, QStringLiteral("EEG_SAMPLE_RATE"), value, msg);
+    sendSetParam(st->profile, key, value,
+                 [this, mac, key, value](QString msg, bool isError) {
+                     appLog(QStringLiteral("User: setParam(%1, %2) -> %3").arg(key, value, msg));
+                     recordSavedParam(mac, key, value, msg);
                      if (isError) {
                          QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
-                                              QStringLiteral("Failed to set EEG_SAMPLE_RATE:\n%1").arg(msg));
+                                              QStringLiteral("Failed to set %1:\n%2").arg(key, msg));
+                         refreshControlStates(currentState());
                          return;
                      }
                      refreshControlStates(currentState());
@@ -1361,54 +1507,45 @@ void MainWindow::refreshControlStates(const std::shared_ptr<DeviceState>& st) {
     if (!st) {
         return;
     }
-    // Chain NTF -> FILTER -> EEG_SAMPLE_RATE_LIST -> EEG_SAMPLE_RATE and
-    // apply once all answers are in, back on the GUI thread
-    st->profile->getParam(5000, "NTF",
-        [this, mac = st->mac](std::string ntfResult, std::string) {
-            postToGui([this, mac, ntfResult]() {
-                auto st = stateFor(mac);
-                if (!st) {
-                    return;
-                }
-                st->profile->getParam(5000, "FILTER",
-                    [this, mac, ntfResult](std::string filterResult, std::string) {
-                        postToGui([this, mac, ntfResult, filterResult]() {
-                            auto st = stateFor(mac);
-                            if (!st) {
-                                return;
-                            }
-                            st->profile->getParam(5000, "EEG_SAMPLE_RATE_LIST",
-                                [this, mac, ntfResult, filterResult](std::string rateListResult, std::string) {
-                                    postToGui([this, mac, ntfResult, filterResult, rateListResult]() {
-                                        auto st = stateFor(mac);
-                                        if (!st) {
-                                            return;
-                                        }
-                                        st->profile->getParam(5000, "EEG_SAMPLE_RATE",
-                                            [this, mac, ntfResult, filterResult, rateListResult](std::string rateResult, std::string) {
-                                                postToGui([this, mac, ntfResult, filterResult, rateListResult, rateResult]() {
-                                                    auto st = stateFor(mac);
-                                                    if (!st) {
-                                                        return;
-                                                    }
-                                                    applyRefreshedControlStates(st,
-                                                        QString::fromStdString(ntfResult),
-                                                        QString::fromStdString(filterResult),
-                                                        QString::fromStdString(rateListResult),
-                                                        QString::fromStdString(rateResult));
-                                                });
-                                            });
-                                    });
-                                });
-                        });
-                    });
+    // Chain NTF -> FILTER -> the per-stream sample-rate list + current keys
+    // and apply once all answers are in, back on the GUI thread.
+    const QStringList keys = {
+        QStringLiteral("NTF"),
+        QStringLiteral("FILTER"),
+        QStringLiteral("EEG_SAMPLE_RATE_LIST"),
+        QStringLiteral("EEG_SAMPLE_RATE"),
+        QStringLiteral("EMG_SAMPLE_RATE_LIST"),
+        QStringLiteral("EMG_SAMPLE_RATE"),
+        QStringLiteral("IMU_SAMPLE_RATE_LIST"),
+        QStringLiteral("IMU_SAMPLE_RATE"),
+        QStringLiteral("PPG_SAMPLE_RATE_LIST"),
+        QStringLiteral("PPG_SAMPLE_RATE"),
+    };
+    refreshControlStatesStep(st->mac, keys, 0, std::make_shared<QMap<QString, QString>>());
+}
+
+void MainWindow::refreshControlStatesStep(const QString& mac, const QStringList& keys, int index,
+                                          const std::shared_ptr<QMap<QString, QString>>& results) {
+    auto st = stateFor(mac);
+    if (!st) {
+        return;
+    }
+    if (index >= keys.size()) {
+        applyRefreshedControlStates(st, *results);
+        return;
+    }
+    const QString key = keys[index];
+    st->profile->getParam(CMD_TIMEOUT_MS, key.toStdString(),
+        [this, mac, keys, index, results, key](const std::string& result, const std::string&) {
+            postToGui([this, mac, keys, index, results, key, result]() {
+                results->insert(key, QString::fromStdString(result));
+                refreshControlStatesStep(mac, keys, index + 1, results);
             });
         });
 }
 
 void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>& st,
-                                             const QString& ntfResult, const QString& filterResult,
-                                             const QString& rateListResult, const QString& rateResult) {
+                                             const QMap<QString, QString>& results) {
     const int emgCh = st->hasInfo ? st->info.EMGChannelCount : 0;
     const int eegCh = st->hasInfo ? st->info.EEGChannelCount : 0;
     const int imuCh = st->hasInfo ? qMax<int>(st->info.AccChannelCount, st->info.GyroChannelCount) : 0;
@@ -1424,6 +1561,7 @@ void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>&
         {QStringLiteral("NTF_IMU"), imuCh},
     };
 
+    const QString ntfResult = results.value(QStringLiteral("NTF"));
     QMap<QString, QPair<bool, bool>> ntf;
     if (!ntfResult.startsWith(QStringLiteral("Error"))) {
         const QStringList items = ntfResult.split(QLatin1Char('|'));
@@ -1438,6 +1576,7 @@ void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>&
         }
     }
 
+    const QString filterResult = results.value(QStringLiteral("FILTER"));
     QMap<QString, QPair<bool, bool>> filters;
     const bool hasFilter = !filterResult.isEmpty() && !filterResult.startsWith(QStringLiteral("Error"));
     QMap<QString, QString> parsed;
@@ -1451,42 +1590,27 @@ void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>&
         filters.insert(it.key(), {hasFilter, hasFilter && parsed.value(it.key()) == QStringLiteral("ON")});
     }
 
-    // EEG Sample Rate radios: candidates from the "|"-separated list answer
-    // (empty on error / unsupported), current bound rate from the rate answer
-    // (0 on error or when no EEG/ECG stream exists).
-    QVector<int> rateOptions;
-    if (!rateListResult.startsWith(QStringLiteral("Error"))) {
-        const QStringList items = rateListResult.split(QLatin1Char('|'), Qt::SkipEmptyParts);
-        for (const QString& item : items) {
-            bool ok = false;
-            const int rate = item.toInt(&ok);
-            if (ok) {
-                rateOptions.append(rate);
-            }
-        }
-    }
-    int rateCurrent = 0;
-    if (!rateResult.startsWith(QStringLiteral("Error"))) {
-        bool ok = false;
-        const int rate = rateResult.toInt(&ok);
-        if (ok) {
-            rateCurrent = rate;
-        }
-    }
-
     st->ntfStates = ntf;
     st->filterStates = filters;
-    st->sampleRateOptions = rateOptions;
-    st->sampleRateCurrent = rateCurrent;
+    st->sampleRateOptions = parseRateOptions(results.value(QStringLiteral("EEG_SAMPLE_RATE_LIST")));
+    st->sampleRateCurrent = parseRateCurrent(results.value(QStringLiteral("EEG_SAMPLE_RATE")));
+    st->emgSampleRateOptions = parseRateOptions(results.value(QStringLiteral("EMG_SAMPLE_RATE_LIST")));
+    st->emgSampleRateCurrent = parseRateCurrent(results.value(QStringLiteral("EMG_SAMPLE_RATE")));
+    st->imuSampleRateOptions = parseRateOptions(results.value(QStringLiteral("IMU_SAMPLE_RATE_LIST")));
+    st->imuSampleRateCurrent = parseRateCurrent(results.value(QStringLiteral("IMU_SAMPLE_RATE")));
+    st->ppgSampleRateOptions = parseRateOptions(results.value(QStringLiteral("PPG_SAMPLE_RATE_LIST")));
+    st->ppgSampleRateCurrent = parseRateCurrent(results.value(QStringLiteral("PPG_SAMPLE_RATE")));
     if (st == currentState()) {
-        applyControlStates(ntf, filters, rateOptions, rateCurrent);
+        applyControlStates(st);
     }
 }
 
-void MainWindow::applyControlStates(const QMap<QString, QPair<bool, bool>>& ntf,
-                                    const QMap<QString, QPair<bool, bool>>& filters,
-                                    const QVector<int>& rateOptions, int rateCurrent) {
+void MainWindow::applyControlStates(const std::shared_ptr<DeviceState>& st) {
     _updatingControls = true;
+    const QMap<QString, QPair<bool, bool>> ntf =
+        st ? st->ntfStates : QMap<QString, QPair<bool, bool>>{};
+    const QMap<QString, QPair<bool, bool>> filters =
+        st ? st->filterStates : QMap<QString, QPair<bool, bool>>{};
     for (auto it = _ntfBoxes.constBegin(); it != _ntfBoxes.constEnd(); ++it) {
         const auto state = ntf.value(it.key(), {false, false});
         // Unsupported boxes are hidden once state info exists; with no state
@@ -1501,34 +1625,52 @@ void MainWindow::applyControlStates(const QMap<QString, QPair<bool, bool>>& ntf,
         it.value()->setEnabled(state.first);
         it.value()->setChecked(state.second);
     }
-    // Sample-rate radios: enabled only when listed as a candidate; the
-    // exclusive group must be dropped to uncheck every radio (no known
+    // Sample-rate radios: the whole group hides while its candidate list is
+    // empty; a candidate missing from the list hides and disables its radio.
+    // The exclusive group must be dropped to uncheck every radio (no known
     // current rate), then restored.
-    if (_sampleRateGroup != nullptr && !_sampleRateRadios.contains(rateCurrent)) {
-        _sampleRateGroup->setExclusive(false);
-    }
-    for (auto it = _sampleRateRadios.constBegin(); it != _sampleRateRadios.constEnd(); ++it) {
-        it.value()->setEnabled(rateOptions.contains(it.key()));
-        it.value()->setChecked(it.key() == rateCurrent);
-    }
-    if (_sampleRateGroup != nullptr) {
-        _sampleRateGroup->setExclusive(true);
-    }
+    auto applyGroup = [](QGroupBox* box, QMap<int, QRadioButton*>& radios,
+                         QButtonGroup* group, const QVector<int>& options, int current) {
+        if (box != nullptr) {
+            box->setVisible(!options.isEmpty());
+        }
+        if (group != nullptr && !radios.contains(current)) {
+            group->setExclusive(false);
+        }
+        for (auto it = radios.constBegin(); it != radios.constEnd(); ++it) {
+            const bool supported = options.contains(it.key());
+            it.value()->setVisible(supported);
+            it.value()->setEnabled(supported);
+            it.value()->setChecked(it.key() == current);
+        }
+        if (group != nullptr) {
+            group->setExclusive(true);
+        }
+    };
+    applyGroup(_rateGroupBox, _sampleRateRadios, _sampleRateGroup,
+               st ? st->sampleRateOptions : QVector<int>{}, st ? st->sampleRateCurrent : 0);
+    applyGroup(_emgRateGroupBox, _emgSampleRateRadios, _emgSampleRateGroup,
+               st ? st->emgSampleRateOptions : QVector<int>{}, st ? st->emgSampleRateCurrent : 0);
+    applyGroup(_imuRateGroupBox, _imuSampleRateRadios, _imuSampleRateGroup,
+               st ? st->imuSampleRateOptions : QVector<int>{}, st ? st->imuSampleRateCurrent : 0);
+    applyGroup(_ppgRateGroupBox, _ppgSampleRateRadios, _ppgSampleRateGroup,
+               st ? st->ppgSampleRateOptions : QVector<int>{}, st ? st->ppgSampleRateCurrent : 0);
     _updatingControls = false;
 }
 
-void MainWindow::setSampleRateChecked(int rate) {
+void MainWindow::setSampleRateChecked(const QMap<int, QRadioButton*>& radios,
+                                      QButtonGroup* group, int rate) {
     _updatingControls = true;
     // The exclusive group must be dropped to uncheck every radio when the
     // rate is not a candidate (same pattern as applyControlStates).
-    if (_sampleRateGroup != nullptr && !_sampleRateRadios.contains(rate)) {
-        _sampleRateGroup->setExclusive(false);
+    if (group != nullptr && !radios.contains(rate)) {
+        group->setExclusive(false);
     }
-    for (auto it = _sampleRateRadios.constBegin(); it != _sampleRateRadios.constEnd(); ++it) {
+    for (auto it = radios.constBegin(); it != radios.constEnd(); ++it) {
         it.value()->setChecked(it.key() == rate);
     }
-    if (_sampleRateGroup != nullptr) {
-        _sampleRateGroup->setExclusive(true);
+    if (group != nullptr) {
+        group->setExclusive(true);
     }
     _updatingControls = false;
 }
@@ -1545,14 +1687,14 @@ void MainWindow::clearUiData() {
 void MainWindow::applySdkDebugLog() {
     // The session's controller log, per-device profile logs and bin exports
     // all go into a "<timestamp>_<sdk version>" subdir of
-    // Documents/sensorsdklog; set the path before setDebugEnabled(true).
+    // Documents/sensorsdklog; set the path before enabling debug logging.
     const QString version = QString::fromStdString(_controller->getVersion()).replace('.', '_');
     const QString dir = QDir::homePath() + QStringLiteral("/Documents/sensorsdklog/")
                         + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))
                         + QStringLiteral("_") + version;
-    _controller->setLogPath(true, dir.toStdString());
-    _controller->setDebugEnabled(true);
-    qInfo("[DemoEMG] setLogPath -> %s", qPrintable(dir));
+    _controller->setParam("LOG_PATH", dir.toStdString());
+    _controller->setParam("DEBUG_ENABLED", "True");
+    qInfo("[DemoEMG] LOG_PATH -> %s", qPrintable(dir));
 }
 
 void MainWindow::appLog(const QString& msg, const char* level,
@@ -1572,7 +1714,7 @@ void MainWindow::onDebugLogToggled(int state) {
     if (_debugLogEnabled) {
         applySdkDebugLog();
     } else {
-        _controller->setDebugEnabled(false);
+        _controller->setParam("DEBUG_ENABLED", "False");
     }
     const QString value = _debugLogEnabled ? QStringLiteral("True") : QStringLiteral("False");
     for (const auto& st : _deviceStates) {
@@ -1967,12 +2109,22 @@ void MainWindow::refreshGestureLabel() {
     }
 }
 
+void MainWindow::refreshSdkLabel() {
+    const QString backend = QString::fromStdString(_controller->getParam("BACK_END"));
+    if (backend == _shownBackend) {
+        return;
+    }
+    _shownBackend = backend;
+    _sdkLabel->setText(QStringLiteral("SDK: %1 | Backend: %2")
+                           .arg(QString::fromStdString(_controller->getVersion()), _shownBackend));
+}
+
 void MainWindow::refreshInfoPanel() {
     auto st = currentState();
     if (st && st->hasInfo) {
-        _modelLabel->setText(QStringLiteral("Model: %1").arg(QString::fromUtf8(st->info.modelName)));
-        _hwLabel->setText(QStringLiteral("HW Version: %1").arg(QString::fromUtf8(st->info.hardwareVersion)));
-        _fwLabel->setText(QStringLiteral("FW Version: %1").arg(QString::fromUtf8(st->info.firmwareVersion)));
+        _modelLabel->setText(QStringLiteral("Model: %1").arg(QString::fromStdString(st->info.modelName)));
+        _hwLabel->setText(QStringLiteral("HW Version: %1").arg(QString::fromStdString(st->info.hardwareVersion)));
+        _fwLabel->setText(QStringLiteral("FW Version: %1").arg(QString::fromStdString(st->info.firmwareVersion)));
         _linkLabel->setText(linkText(st->info));
         _mtuLabel->setText(mtuText(st->info));
     } else {
@@ -1994,10 +2146,7 @@ void MainWindow::refreshInfoPanel() {
     if (!st) {
         _cube->clearQuaternion();
     }
-    applyControlStates(st ? st->ntfStates : QMap<QString, QPair<bool, bool>>{},
-                       st ? st->filterStates : QMap<QString, QPair<bool, bool>>{},
-                       st ? st->sampleRateOptions : QVector<int>{},
-                       st ? st->sampleRateCurrent : 0);
+    applyControlStates(st);
 }
 
 void MainWindow::updateLostPacketLabel() {
@@ -2019,8 +2168,8 @@ void MainWindow::updateLostPacketLabel() {
 
 // -- Synchronized multi-device stream start/stop ------------------------------
 
-std::vector<std::shared_ptr<sensor::SensorProfile>> MainWindow::liveReadySensors() {
-    std::vector<std::shared_ptr<sensor::SensorProfile>> sensors;
+std::vector<sensor::SensorProfile*> MainWindow::liveReadySensors() {
+    std::vector<sensor::SensorProfile*> sensors;
     QMutexLocker lock(&_statesMutex);
     for (auto it = _deviceStates.constBegin(); it != _deviceStates.constEnd(); ++it) {
         const auto& st = it.value();
@@ -2053,14 +2202,14 @@ void MainWindow::doMultiStart() {
     // dispersion check, longer timeout, more attempts.
     QSet<QString> models;
     for (const auto& s : sensors) {
-        models.insert(QString::fromUtf8(s->getDeviceInfo().modelName));
+        models.insert(QString::fromStdString(s->getDeviceInfo().modelName));
     }
     const bool sameModel = models.size() == 1 && !models.contains(QString());
     const int startTimeout = sameModel ? MULTI_START_TIMEOUT_MS : 60000;
     const int dispersion = sameModel ? 5 : -1;
     const int attempts = sameModel ? 3 : 5;
 
-    std::vector<std::shared_ptr<sensor::SensorProfile>> transferring;
+    std::vector<sensor::SensorProfile*> transferring;
     for (const auto& s : sensors) {
         if (s->hasStartDataNotification()) {
             transferring.push_back(s);
@@ -2068,7 +2217,7 @@ void MainWindow::doMultiStart() {
     }
 
     auto startAll = [this, sensors, startTimeout, dispersion, attempts]() {
-        _controller->multiStartDataNotification(sensors, startTimeout, dispersion, attempts,
+        _controller->multiStartData(sensors, startTimeout, dispersion, attempts,
             [this](const std::map<std::string, std::pair<bool, std::string>>& results) {
                 postToGui([this, results]() {
                     QStringList failed;
@@ -2091,7 +2240,7 @@ void MainWindow::doMultiStart() {
 
     // Streaming devices go through one synchronized stop round first.
     if (!transferring.empty()) {
-        _controller->multiStopDataNotification(transferring, MULTI_STOP_TIMEOUT_MS,
+        _controller->multiStopData(transferring, MULTI_STOP_TIMEOUT_MS,
             [this, startAll](const std::map<std::string, std::pair<bool, std::string>>& results) {
                 postToGui([this, results, startAll]() {
                     QStringList failed;
@@ -2123,7 +2272,7 @@ void MainWindow::doMultiStop() {
     }
     appLog(QStringLiteral("User: multi stop on %1 device(s)").arg(sensors.size()));
     _btnMultiSync->setEnabled(false);
-    _controller->multiStopDataNotification(sensors, MULTI_STOP_TIMEOUT_MS,
+    _controller->multiStopData(sensors, MULTI_STOP_TIMEOUT_MS,
         [this](const std::map<std::string, std::pair<bool, std::string>>& results) {
             postToGui([this, results]() {
                 QStringList failed;
@@ -2147,7 +2296,7 @@ void MainWindow::doMultiStop() {
 // -- Bin replay --------------------------------------------------------------
 
 void MainWindow::setReplayModeUi(bool replaying) {
-    if (replaying && _controller->isScaning()) {
+    if (replaying && _controller->isScanning()) {
         _controller->stopScan();
         _scanning = false;
     }
@@ -2171,6 +2320,9 @@ void MainWindow::setReplayModeUi(bool replaying) {
 }
 
 void MainWindow::onReplayClicked() {
+    if (_replayStarting) {
+        return;
+    }
     if (!_deviceStates.isEmpty()) {
         _statusLabel->setText(QStringLiteral("Please disconnect all devices before replaying a bin file"));
         return;
@@ -2192,51 +2344,110 @@ void MainWindow::onReplayClicked() {
 
 void MainWindow::startSingleReplay(const QString& path) {
     appLog(QStringLiteral("User: replay bin file: %1").arg(path));
-    const auto info = _controller->getBinFileInfo(path.toStdString());
-    if (!info.valid || info.mac.empty()) {
-        appLog(QStringLiteral("App: invalid bin file (no config record): %1").arg(path), "W");
-        _statusLabel->setText(QStringLiteral("Invalid bin file: no config record found"));
-        return;
+    _replayStarting = true;
+    if (_replayStartThread.joinable()) {
+        _replayStartThread.join();
     }
-    auto profile = _controller->replayBinFile(path.toStdString(), info.mac, true,
-                                              REPLAY_DELEGATE_TIMEOUT_MS);
-    if (!profile) {
-        _statusLabel->setText(QStringLiteral("Replay failed to start"));
-        return;
-    }
-    // The replay thread waits for a delegate before streaming data.
-    profile->setDelegate(_bridge);
-
-    _replayStopRequested = false;
-    _replayPaused = false;
-    _replayDoneFired = false;
-    _replayMemberTotal = 1;
-
-    const QString mac = addReplayMember(profile, info);
-    for (int i = 0; i < _deviceList->count(); ++i) {
-        if (_deviceList->item(i)->data(Qt::UserRole).toString() == mac) {
-            _deviceList->setCurrentItem(_deviceList->item(i));
-            break;
+    _replayStartThread = std::thread([this, path]() {
+        const auto info = _controller->getBinFileInfo(path.toStdString());
+        if (!info.valid || info.mac.empty()) {
+            postToGui([this, path]() {
+                _replayStarting = false;
+                appLog(QStringLiteral("App: invalid bin file (no config record): %1").arg(path), "W");
+                _statusLabel->setText(QStringLiteral("Invalid bin file: no config record found"));
+            });
+            return;
         }
-    }
-    _currentMac = mac;
+        auto profile = _controller->replayBinFile(path.toStdString(), info.mac, true,
+                                                  REPLAY_DELEGATE_TIMEOUT_MS);
+        postToGui([this, path, info, profile]() {
+            _replayStarting = false;
+            if (!profile) {
+                _statusLabel->setText(QStringLiteral("Replay failed to start"));
+                return;
+            }
+            // The replay thread waits for a delegate before streaming data.
+            profile->setCallbacks(_bridge->profileCallbacks());
 
-    // Sync the sample-rate radio checked state to the bin's starting rate
-    // (the radios' disabled state stays untouched).
-    if (info.deviceInfo.EEGSampleRate > 0) {
-        stateFor(mac)->sampleRateCurrent = (int)info.deviceInfo.EEGSampleRate;
-        setSampleRateChecked((int)info.deviceInfo.EEGSampleRate);
-    }
+            _replayStopRequested = false;
+            _replayPaused = false;
+            _replayDoneFired = false;
+            _replayMemberTotal = 1;
 
-    retargetWaveforms();
-    refreshInfoPanel();
-    _statusLabel->setText(QStringLiteral("Replaying: %1 (duration %2s, realtime) ...")
-                              .arg(QFileInfo(path).fileName())
-                              .arg(info.durationSec, 0, 'f', 1));
-    setReplayModeUi(true);
+            const QString mac = addReplayMember(profile, info);
+            for (int i = 0; i < _deviceList->count(); ++i) {
+                if (_deviceList->item(i)->data(Qt::UserRole).toString() == mac) {
+                    _deviceList->setCurrentItem(_deviceList->item(i));
+                    break;
+                }
+            }
+            _currentMac = mac;
+
+            // Sync the sample-rate radio checked states to the bin's starting
+            // rates (the radios' disabled state stays untouched).
+            if (info.deviceInfo.EEGSampleRate > 0) {
+                stateFor(mac)->sampleRateCurrent = (int)info.deviceInfo.EEGSampleRate;
+                setSampleRateChecked(_sampleRateRadios, _sampleRateGroup,
+                                     (int)info.deviceInfo.EEGSampleRate);
+            }
+            if (info.deviceInfo.EMGSampleRate > 0) {
+                stateFor(mac)->emgSampleRateCurrent = (int)info.deviceInfo.EMGSampleRate;
+                setSampleRateChecked(_emgSampleRateRadios, _emgSampleRateGroup,
+                                     (int)info.deviceInfo.EMGSampleRate);
+            }
+            if (info.deviceInfo.AccSampleRate > 0) {
+                stateFor(mac)->imuSampleRateCurrent = (int)info.deviceInfo.AccSampleRate;
+                setSampleRateChecked(_imuSampleRateRadios, _imuSampleRateGroup,
+                                     (int)info.deviceInfo.AccSampleRate);
+            }
+
+            retargetWaveforms();
+            refreshInfoPanel();
+            _statusLabel->setText(QStringLiteral("Replaying: %1 (duration %2s, realtime) ...")
+                                      .arg(QFileInfo(path).fileName())
+                                      .arg(info.durationSec, 0, 'f', 1));
+            setReplayModeUi(true);
+        });
+    });
+}
+
+void MainWindow::onCheckDongleClicked() {
+    appLog(QStringLiteral("User: check setup dongle"));
+    _btnCheckDongle->setEnabled(false);
+    _btnCheckDongle->setText(QStringLiteral("Checking Dongle..."));
+    if (_dongleCheckThread.joinable()) {
+        _dongleCheckThread.join();
+    }
+    _dongleCheckThread = std::thread([this]() {
+        const auto check = sensor::SensorController::checkSetupDongle();
+        const QString result = QString::fromStdString(check.second);
+        postToGui([this, result]() {
+            appLog(QStringLiteral("App: check dongle result: %1").arg(result.section('\n', 0, 0)));
+            _btnCheckDongle->setEnabled(true);
+            _btnCheckDongle->setText(QStringLiteral("Check Setup Dongle"));
+            if (result.startsWith(QStringLiteral("OK"))) {
+                const QString firstLine = result.section('\n', 0, 0);
+                const QString extra = result.section('\n', 1).trimmed();
+                QString msg = QStringLiteral("USB BLE dongle is ready (driver installed and usable by the SDK).");
+                const int colon = firstLine.indexOf(':');
+                if (colon >= 0) {
+                    msg += QStringLiteral("\nUsable dongle count: %1").arg(firstLine.mid(colon + 1).trimmed());
+                }
+                if (!extra.isEmpty()) {
+                    msg += QStringLiteral("\n") + extra;
+                }
+                QMessageBox::information(this, QStringLiteral("Check Setup Dongle"), msg);
+            } else {
+                QMessageBox::warning(this, QStringLiteral("Check Setup Dongle"), result);
+            }
+        });
+    });
 }
 
 void MainWindow::onMultiReplayClicked() {
+    if (_replayStarting) {
+        return;
+    }
     if (!_deviceStates.isEmpty()) {
         _statusLabel->setText(QStringLiteral("Please disconnect all devices before replaying bin files"));
         return;
@@ -2259,74 +2470,104 @@ void MainWindow::onMultiReplayClicked() {
     }
     appLog(QStringLiteral("User: replay bin files: %1").arg(paths.join(QStringLiteral("; "))));
 
-    std::vector<std::pair<std::string, std::string>> pathMacList;
-    QVector<sensor::BinFileInfo> infos;
-    QSet<QString> macs;
-    for (const QString& path : paths) {
-        const auto info = _controller->getBinFileInfo(path.toStdString());
-        if (!info.valid || info.mac.empty()) {
-            appLog(QStringLiteral("App: invalid bin file (no config record): %1").arg(path), "W");
-            _statusLabel->setText(QStringLiteral("Invalid bin file: %1").arg(QFileInfo(path).fileName()));
-            return;
-        }
-        const QString mac = QString::fromStdString(info.mac);
-        if (macs.contains(mac)) {
-            appLog(QStringLiteral("App: duplicate device mac in selection: %1").arg(mac), "W");
-            _statusLabel->setText(QStringLiteral("Duplicate device mac in selected bin files"));
-            return;
-        }
-        macs.insert(mac);
-        pathMacList.emplace_back(path.toStdString(), info.mac);
-        infos.append(info);
+    _replayStarting = true;
+    if (_replayStartThread.joinable()) {
+        _replayStartThread.join();
     }
+    _replayStartThread = std::thread([this, paths]() {
+        std::vector<std::pair<std::string, std::string>> pathMacList;
+        QVector<sensor::BinFileInfo> infos;
+        QSet<QString> macs;
+        for (const QString& path : paths) {
+            const auto info = _controller->getBinFileInfo(path.toStdString());
+            if (!info.valid || info.mac.empty()) {
+                postToGui([this, path]() {
+                    _replayStarting = false;
+                    appLog(QStringLiteral("App: invalid bin file (no config record): %1").arg(path), "W");
+                    _statusLabel->setText(QStringLiteral("Invalid bin file: %1")
+                                              .arg(QFileInfo(path).fileName()));
+                });
+                return;
+            }
+            const QString mac = QString::fromStdString(info.mac);
+            if (macs.contains(mac)) {
+                postToGui([this, mac]() {
+                    _replayStarting = false;
+                    appLog(QStringLiteral("App: duplicate device mac in selection: %1").arg(mac), "W");
+                    _statusLabel->setText(QStringLiteral("Duplicate device mac in selected bin files"));
+                });
+                return;
+            }
+            macs.insert(mac);
+            pathMacList.emplace_back(path.toStdString(), info.mac);
+            infos.append(info);
+        }
 
-    const auto profiles = _controller->multiReplayBinFile(pathMacList, true,
-                                                          REPLAY_DELEGATE_TIMEOUT_MS);
-    _replayStopRequested = false;
-    _replayPaused = false;
-    _replayDoneFired = false;
-    _replayMemberTotal = paths.size();
+        const auto profiles = _controller->multiReplayBinFile(pathMacList, true,
+                                                              REPLAY_DELEGATE_TIMEOUT_MS);
+        postToGui([this, paths, infos, profiles]() {
+            _replayStarting = false;
+            _replayStopRequested = false;
+            _replayPaused = false;
+            _replayDoneFired = false;
+            _replayMemberTotal = paths.size();
 
-    QString firstMac;
-    int firstRate = 0;
-    for (int i = 0; i < paths.size(); ++i) {
-        auto profile = profiles[i];
-        if (!profile) {
-            appLog(QStringLiteral("App: replay member failed to start: %1").arg(paths[i]), "W");
-            continue;
-        }
-        // The replay thread waits for a delegate before streaming data.
-        profile->setDelegate(_bridge);
-        const QString mac = addReplayMember(profile, infos[i]);
-        if (firstMac.isEmpty()) {
-            firstMac = mac;
-            firstRate = (int)infos[i].deviceInfo.EEGSampleRate;
-        }
-    }
-    if (firstMac.isEmpty()) {
-        _statusLabel->setText(QStringLiteral("Replay failed to start"));
-        return;
-    }
-    for (int i = 0; i < _deviceList->count(); ++i) {
-        if (_deviceList->item(i)->data(Qt::UserRole).toString() == firstMac) {
-            _deviceList->setCurrentItem(_deviceList->item(i));
-            break;
-        }
-    }
-    _currentMac = firstMac;
-    if (firstRate > 0) {
-        stateFor(firstMac)->sampleRateCurrent = firstRate;
-        setSampleRateChecked(firstRate);
-    }
+            QString firstMac;
+            int firstInfo = -1;
+            for (int i = 0; i < paths.size(); ++i) {
+                auto profile = profiles[i];
+                if (!profile) {
+                    appLog(QStringLiteral("App: replay member failed to start: %1").arg(paths[i]), "W");
+                    continue;
+                }
+                // The replay thread waits for a delegate before streaming data.
+                profile->setCallbacks(_bridge->profileCallbacks());
+                const QString mac = addReplayMember(profile, infos[i]);
+                if (firstMac.isEmpty()) {
+                    firstMac = mac;
+                    firstInfo = i;
+                }
+            }
+            if (firstMac.isEmpty()) {
+                _statusLabel->setText(QStringLiteral("Replay failed to start"));
+                return;
+            }
+            for (int i = 0; i < _deviceList->count(); ++i) {
+                if (_deviceList->item(i)->data(Qt::UserRole).toString() == firstMac) {
+                    _deviceList->setCurrentItem(_deviceList->item(i));
+                    break;
+                }
+            }
+            _currentMac = firstMac;
+            // Sync the sample-rate radio checked states to the first member's
+            // starting rates (the radios' disabled state stays untouched).
+            const auto& firstDeviceInfo = infos[firstInfo].deviceInfo;
+            if (firstDeviceInfo.EEGSampleRate > 0) {
+                stateFor(firstMac)->sampleRateCurrent = (int)firstDeviceInfo.EEGSampleRate;
+                setSampleRateChecked(_sampleRateRadios, _sampleRateGroup,
+                                     (int)firstDeviceInfo.EEGSampleRate);
+            }
+            if (firstDeviceInfo.EMGSampleRate > 0) {
+                stateFor(firstMac)->emgSampleRateCurrent = (int)firstDeviceInfo.EMGSampleRate;
+                setSampleRateChecked(_emgSampleRateRadios, _emgSampleRateGroup,
+                                     (int)firstDeviceInfo.EMGSampleRate);
+            }
+            if (firstDeviceInfo.AccSampleRate > 0) {
+                stateFor(firstMac)->imuSampleRateCurrent = (int)firstDeviceInfo.AccSampleRate;
+                setSampleRateChecked(_imuSampleRateRadios, _imuSampleRateGroup,
+                                     (int)firstDeviceInfo.AccSampleRate);
+            }
 
-    retargetWaveforms();
-    refreshInfoPanel();
-    _statusLabel->setText(QStringLiteral("Replaying: %1 bin files (realtime) ...")
-                              .arg(_replayMemberTotal));
-    setReplayModeUi(true);
+            retargetWaveforms();
+            refreshInfoPanel();
+            _statusLabel->setText(QStringLiteral("Replaying: %1 bin files (realtime) ...")
+                                      .arg(_replayMemberTotal));
+            setReplayModeUi(true);
+        });
+    });
 }
 
-QString MainWindow::addReplayMember(const std::shared_ptr<sensor::SensorProfile>& profile,
+QString MainWindow::addReplayMember(sensor::SensorProfile* profile,
                                     const sensor::BinFileInfo& info) {
     const QString mac = QString::fromStdString(info.mac);
     _replayMacs.insert(mac);
@@ -2352,11 +2593,14 @@ void MainWindow::onReplayPauseResume() {
     const QString action = _replayPaused ? QStringLiteral("resume") : QStringLiteral("pause");
     std::string result = "OK";
     for (const QString& mac : std::as_const(_replayMacs)) {
-        result = _replayPaused
+        const std::string r = _replayPaused
             ? _controller->resumeBinReplay(mac.toStdString())
             : _controller->pauseBinReplay(mac.toStdString());
-        appLog(QStringLiteral("User: %1 replay -> %2").arg(action, QString::fromStdString(result)),
-               result == "OK" ? "I" : "W", stateFor(mac));
+        appLog(QStringLiteral("User: %1 replay -> %2").arg(action, QString::fromStdString(r)),
+               r == "OK" ? "I" : "W", stateFor(mac));
+        if (r != "OK") {
+            result = r;
+        }
     }
     if (result != "OK") {
         _statusLabel->setText(QStringLiteral("Replay pause/resume failed: %1")
@@ -2703,6 +2947,7 @@ void MainWindow::onPlotTick() {
     refreshValueLabels();
     refreshBioSideTexts();
     refreshGestureLabel();
+    refreshSdkLabel();
 
     // 3D cube follows the latest quaternion sample
     if (st && st->quat.allocated && st->quat.channels >= 4) {
@@ -2744,6 +2989,16 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (_analyzeThread.joinable()) {
         _analyzeThread.join();
     }
-    sensor::SensorController::destory();
+    if (_replayStartThread.joinable()) {
+        _replayStartThread.join();
+    }
+    if (_dongleCheckThread.joinable()) {
+        _dongleCheckThread.join();
+    }
+    sensor::SensorController::terminate();
     event->accept();
+}
+
+void MainWindow::onApplicationSuspended() {
+    _controller->onSuspend();
 }

@@ -83,15 +83,15 @@ void SpectrumWidget::paintEvent(QPaintEvent* /*event*/) {
         const auto& row = _mags[ch];
         const int colorIdx = _colorIndex >= 0 ? _colorIndex : static_cast<int>(ch);
         const QColor color = kChannelColors[colorIdx % kChannelColorCount];
-        QPolygonF points;
-        points.reserve(static_cast<int>(row.size()));
-        for (size_t i = 0; i < row.size() && i < _freqs.size(); ++i) {
-            const double x = plot.left() + _freqs[i] / fMax * (plot.width() - 1);
-            const double y = plot.bottom() - 1 - row[i] / yMax * (plot.height() - 2);
-            points.append(QPointF(x, y));
+        const int count = static_cast<int>(std::min(row.size(), _freqs.size()));
+        _poly.resize(count);
+        for (int i = 0; i < count; ++i) {
+            const double x = plot.left() + _freqs[static_cast<size_t>(i)] / fMax * (plot.width() - 1);
+            const double y = plot.bottom() - 1 - row[static_cast<size_t>(i)] / yMax * (plot.height() - 2);
+            _poly[i] = QPointF(x, y);
         }
         p.setPen(QPen(color, 1));
-        p.drawPolyline(points);
+        p.drawPolyline(_poly);
 
         const QString label = labelRow < _labels.size() ? _labels[labelRow]
                                                         : QStringLiteral("ch%1").arg(ch);

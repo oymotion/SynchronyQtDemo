@@ -2,7 +2,7 @@
 #include <QStyle>
 #include <QStyleFactory>
 
-#include <SensorController.hpp>
+#include <sensorcpp.hpp>
 
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
@@ -56,9 +56,9 @@ int main(int argc, char* argv[]) {
     window.show();
 
     // Background: flush the SDK capture and log files.
-    QObject::connect(&app, &QGuiApplication::applicationStateChanged, [](Qt::ApplicationState state) {
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged, [&window](Qt::ApplicationState state) {
         if (state == Qt::ApplicationSuspended) {
-            sensor::SensorController::getInstance()->onSuspend();
+            window.onApplicationSuspended();
         }
     });
 

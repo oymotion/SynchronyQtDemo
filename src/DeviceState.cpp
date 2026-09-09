@@ -77,12 +77,12 @@ void RingBuffer::clear() {
     writeIndex = 0;
 }
 
-DeviceState::DeviceState(std::shared_ptr<sensor::SensorProfile> p)
-    : profile(std::move(p)) {
+DeviceState::DeviceState(sensor::SensorProfile* p)
+    : profile(p) {
     if (profile) {
         auto dev = profile->getDevice();
-        name = QString::fromUtf8(dev.name);
-        mac = QString::fromUtf8(dev.mac);
+        name = QString::fromStdString(dev.name);
+        mac = QString::fromStdString(dev.mac);
     }
     rateWindowStartMs = QDateTime::currentMSecsSinceEpoch();
 }
@@ -97,7 +97,7 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
         if (data.getLostPackageCount() > 0) {
             lostCounts[sensorTypeName(data.getDataType())] = data.getLostPackageCount();
         }
-        if (data.channelSamples != nullptr && data.getSampleCount() > 0 && data.getChannelCount() > 0) {
+        if (data.getSamples() != nullptr && data.getSampleCount() > 0 && data.getChannelCount() > 0) {
             qint64 valid = 0;
             for (int i = 0; i < data.getSampleCount(); ++i) {
                 if (fresh && data.isChannelEnabled(0) && !data.isLost(0, i)) {
@@ -134,10 +134,10 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
     QVector<float>* impedance = nullptr;
     double seconds = IMU_BUFFER_SECONDS;
     switch (data.getDataType()) {
-    case sensor::SensorData::NTF_ACC_DATA:
+    case sensor::SensorData::NTF_ACC:
         target = &acc;
         break;
-    case sensor::SensorData::NTF_GYO_DATA:
+    case sensor::SensorData::NTF_GYRO:
         target = &gyro;
         break;
     case sensor::SensorData::NTF_QUATERNION:
@@ -234,9 +234,9 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
 }
 
 void DeviceState::appendImuSegments(const sensor::SensorDataView& data) {
-    static const struct { sensor::SensorData::Type type; int offset; int count; } segs[] = {
-        {sensor::SensorData::NTF_ACC_DATA, 0, 3},
-        {sensor::SensorData::NTF_GYO_DATA, 3, 3},
+    static const struct { int type; int offset; int count; } segs[] = {
+        {sensor::SensorData::NTF_ACC, 0, 3},
+        {sensor::SensorData::NTF_GYRO, 3, 3},
         {sensor::SensorData::NTF_EULER_DATA, 6, 3},
         {sensor::SensorData::NTF_QUATERNION, 9, 4},
     };
@@ -244,7 +244,7 @@ void DeviceState::appendImuSegments(const sensor::SensorDataView& data) {
     // Probe the parent batch once up front; false = invalid batch.
     const bool fresh = data.isDataValid();
     for (const auto& seg : segs) {
-        if (data.getChannelCount() < seg.offset + seg.count || data.channelSamples == nullptr) {
+        if (data.getChannelCount() < seg.offset + seg.count || data.getSamples() == nullptr) {
             continue;
         }
         // Per-segment-type rate bookkeeping; lost-packet bookkeeping stays
@@ -268,8 +268,8 @@ void DeviceState::appendImuSegments(const sensor::SensorDataView& data) {
 
         RingBuffer* target = nullptr;
         switch (seg.type) {
-        case sensor::SensorData::NTF_ACC_DATA: target = &acc; break;
-        case sensor::SensorData::NTF_GYO_DATA: target = &gyro; break;
+        case sensor::SensorData::NTF_ACC: target = &acc; break;
+        case sensor::SensorData::NTF_GYRO: target = &gyro; break;
         case sensor::SensorData::NTF_QUATERNION: target = &quat; break;
         case sensor::SensorData::NTF_EULER_DATA: target = &euler; break;
         default: break;
@@ -375,8 +375,8 @@ QString DeviceState::buildStatusText() const {
     QMutexLocker lock(&rateMutex);
     // Fixed display order; only types that have delivered data are shown.
     const QList<QPair<int, QString>> order = {
-        {sensor::SensorData::NTF_ACC_DATA, QStringLiteral("ACC")},
-        {sensor::SensorData::NTF_GYO_DATA, QStringLiteral("Gyro")},
+        {sensor::SensorData::NTF_ACC, QStringLiteral("ACC")},
+        {sensor::SensorData::NTF_GYRO, QStringLiteral("Gyro")},
         {sensor::SensorData::NTF_IMU, QStringLiteral("IMU")},
         {sensor::SensorData::NTF_QUATERNION, QStringLiteral("Quat")},
         {sensor::SensorData::NTF_EULER_DATA, QStringLiteral("Euler")},
@@ -407,8 +407,8 @@ QString DeviceState::buildStatusText() const {
 QString DeviceState::buildRateText() const {
     QMutexLocker lock(&rateMutex);
     const QList<QPair<int, QString>> order = {
-        {sensor::SensorData::NTF_ACC_DATA, QStringLiteral("ACC")},
-        {sensor::SensorData::NTF_GYO_DATA, QStringLiteral("Gyro")},
+        {sensor::SensorData::NTF_ACC, QStringLiteral("ACC")},
+        {sensor::SensorData::NTF_GYRO, QStringLiteral("Gyro")},
         {sensor::SensorData::NTF_IMU, QStringLiteral("IMU")},
         {sensor::SensorData::NTF_QUATERNION, QStringLiteral("Quat")},
         {sensor::SensorData::NTF_EULER_DATA, QStringLiteral("Euler")},
@@ -447,13 +447,13 @@ QString DeviceState::buildRateText() const {
 
 QString sensorTypeName(int type) {
     switch (type) {
-    case sensor::SensorData::NTF_ACC_DATA: return QStringLiteral("ACC");
-    case sensor::SensorData::NTF_GYO_DATA: return QStringLiteral("GYRO");
+    case sensor::SensorData::NTF_ACC: return QStringLiteral("ACC");
+    case sensor::SensorData::NTF_GYRO: return QStringLiteral("GYRO");
     case sensor::SensorData::NTF_EULER_DATA: return QStringLiteral("EULER");
     case sensor::SensorData::NTF_QUATERNION: return QStringLiteral("QUAT");
     case sensor::SensorData::NTF_GEST: return QStringLiteral("GEST");
     case sensor::SensorData::NTF_EMG_RAW_DATA: return QStringLiteral("EMG");
-    case sensor::SensorData::NTF_MAG_ANGLE_DATA: return QStringLiteral("MAG");
+    case sensor::SensorData::NTF_MAG_ANGLE: return QStringLiteral("MAG");
     case sensor::SensorData::NTF_EEG: return QStringLiteral("EEG");
     case sensor::SensorData::NTF_PPG: return QStringLiteral("PPG");
     case sensor::SensorData::NTF_SPO2: return QStringLiteral("SPO2");

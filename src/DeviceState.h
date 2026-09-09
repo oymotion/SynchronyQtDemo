@@ -7,8 +7,7 @@
 #include <QString>
 #include <QVector>
 #include <memory>
-#include <SensorProfile.hpp>
-#include <SensorData.hpp>
+#include <sensorcpp.hpp>
 
 #include "LiveFilter.h"
 
@@ -37,9 +36,9 @@ struct RingBuffer {
 // Per-device display state.
 class DeviceState {
 public:
-    explicit DeviceState(std::shared_ptr<sensor::SensorProfile> p);
+    explicit DeviceState(sensor::SensorProfile* p);
 
-    std::shared_ptr<sensor::SensorProfile> profile;
+    sensor::SensorProfile* profile = nullptr;
     QString name;
     QString mac;
     bool isReplay = false;
@@ -106,6 +105,15 @@ public:
     // getParam "EEG_SAMPLE_RATE" (0 = none / unknown).
     QVector<int> sampleRateOptions;
     int sampleRateCurrent = 0;
+    // Cached EMG/IMU/PPG sample-rate control states, same layout as the EEG
+    // state above ("EMG_SAMPLE_RATE_LIST" / "IMU_SAMPLE_RATE_LIST" /
+    // "PPG_SAMPLE_RATE_LIST" candidates plus the matching current keys).
+    QVector<int> emgSampleRateOptions;
+    int emgSampleRateCurrent = 0;
+    QVector<int> imuSampleRateOptions;
+    int imuSampleRateCurrent = 0;
+    QVector<int> ppgSampleRateOptions;
+    int ppgSampleRateCurrent = 0;
 
     // Data entry (called on the worker thread draining the data queue; the
     // queued batch is an owned clone or a zero-copy view, per the Clone Data
@@ -129,7 +137,7 @@ private:
     void appendImuSegments(const sensor::SensorDataView& data);
 };
 
-// Short label for a SensorData::Type value ("ACC", "GYRO", "EMG", ...).
+// Short label for a data stream type ("ACC", "GYRO", "EMG", ...).
 QString sensorTypeName(int type);
 
 #endif // DEVICESTATE_H

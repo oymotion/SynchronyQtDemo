@@ -2,10 +2,12 @@
 #define WAVEFORMWIDGET_H
 
 #include <QColor>
+#include <QPolygonF>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
 #include <QMutex>
+#include <vector>
 
 struct RingBuffer;
 
@@ -47,6 +49,14 @@ private:
     QString _placeholder = QStringLiteral("Not connected");
     QString _sideText;
     QColor _sideColor = Qt::white;
+
+    // Reusable paint buffers.
+    struct ChannelSnapshot {
+        int channel = -1;
+        std::vector<float> samples;  // oldest -> newest
+    };
+    std::vector<ChannelSnapshot> _snapshot;
+    QPolygonF _poly;
 };
 
 #endif // WAVEFORMWIDGET_H

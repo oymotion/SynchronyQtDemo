@@ -1,12 +1,3 @@
-//
-//  SenSdkDefines.h
-//  sensorobjc — Objective-C wrapper over the sen_capi flat C API.
-//
-//  Enum names and values mirror the Android binding / Python SDK
-//  (DeviceState and DataType), matching the sen_capi SenDataType /
-//  SenDeviceState numbering.
-//
-
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -20,7 +11,6 @@ typedef NS_ENUM(NSInteger, BLEState) {
     BLEStateInvalid = 5,
 };
 
-/// SensorData stream type; values match sen_capi's enum SenDataType.
 typedef NS_ENUM(NSInteger, NotifyDataType) {
     NTF_ACC = 1,
     NTF_GYRO = 2,

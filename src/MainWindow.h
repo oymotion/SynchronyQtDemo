@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <atomic>
 #include <condition_variable>
@@ -15,7 +16,7 @@
 #include <thread>
 #include <vector>
 
-#include <SensorController.hpp>
+#include <sensorcpp.hpp>
 
 #include "DeviceState.h"
 #include "SdkBridge.h"
@@ -23,6 +24,7 @@
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
@@ -46,6 +48,9 @@ public:
     MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+    // App moved to the background.
+    void onApplicationSuspended();
+
 protected:
     void closeEvent(QCloseEvent* event) override;
 
@@ -60,12 +65,12 @@ private slots:
     void onLiveFilterChanged(int index);
     void onNtfToggled();
     void onFilterToggled();
-    void onSampleRateToggled();
     void onDebugLogToggled(int state);
     void onBinDataToggled(int state);
     void onAutoReconnectToggled(bool checked);
     void onMultiSyncClicked();
     void onMultiReplayClicked();
+    void onCheckDongleClicked();
     void onReplayClicked();
     void onReplayPauseResume();
     void onReplayStop();
@@ -95,6 +100,12 @@ private:
     QWidget* buildWaveformPage();
     QWidget* buildBioPage();
     QWidget* buildSettingsPage();
+    // One sample-rate radio group box (EEG/EMG/IMU/PPG), hidden until its
+    // candidate list arrives.
+    QGroupBox* buildSampleRateGroup(QWidget* page, const QString& title,
+                                    const QVector<int>& candidates,
+                                    QMap<int, QRadioButton*>* radios,
+                                    QButtonGroup** group, const QString& key);
     void applySdkDebugLog();
 
     // Writes one app event line into the SDK log: with a device state it
@@ -111,12 +122,13 @@ private:
     // Rebuilds one replay list row text, adding the [Streaming] mark while
     // the replay data flows.
     void updateReplayItemText(const QString& mac);
-    void sortDeviceList();
+    void insertDeviceRowSorted(QListWidgetItem* item, int rssi);
+    void evictStaleDevices(const QSet<QString>& present);
 
     // Synchronized multi-device stream start/stop.
     void doMultiStart();
     void doMultiStop();
-    std::vector<std::shared_ptr<sensor::SensorProfile>> liveReadySensors();
+    std::vector<sensor::SensorProfile*> liveReadySensors();
 
     // Connect chain (each step bounces back to the GUI thread).
     void onProfileReady(const QString& mac);
@@ -131,19 +143,28 @@ private:
                           const QString& value, const QString& result);
     void restoreSavedParams(const QString& mac, int index);
 
-    void sendSetParam(const std::shared_ptr<sensor::SensorProfile>& profile,
+    void sendSetParam(sensor::SensorProfile* profile,
                       const QString& key, const QString& value,
                       std::function<void(QString result, bool isError)> completion = nullptr);
     void refreshControlStates(const std::shared_ptr<DeviceState>& st);
+    // One chained getParam query of the control-state refresh; applies the
+    // collected answers once every key has answered.
+    void refreshControlStatesStep(const QString& mac, const QStringList& keys, int index,
+                                  const std::shared_ptr<QMap<QString, QString>>& results);
     void applyRefreshedControlStates(const std::shared_ptr<DeviceState>& st,
-                                     const QString& ntfResult, const QString& filterResult,
-                                     const QString& rateListResult, const QString& rateResult);
-    void applyControlStates(const QMap<QString, QPair<bool, bool>>& ntf,
-                            const QMap<QString, QPair<bool, bool>>& filters,
-                            const QVector<int>& rateOptions, int rateCurrent);
+                                     const QMap<QString, QString>& results);
+    void applyControlStates(const std::shared_ptr<DeviceState>& st);
+    // Sample-rate radio handlers shared by the EEG/EMG/IMU/PPG groups: the
+    // toggle applies the checked state at once and defers the setParam to
+    // the next tick.
+    void onSampleRateToggled(int rate, bool checked,
+                             const QMap<int, QRadioButton*>& radios,
+                             QButtonGroup* group, const QString& key);
+    void applySampleRate(const QString& key, int rate);
     // Only updates the sample-rate radios' checked state (enable state and
     // setParam untouched); used by paths that bypass refreshControlStates.
-    void setSampleRateChecked(int rate);
+    void setSampleRateChecked(const QMap<int, QRadioButton*>& radios,
+                              QButtonGroup* group, int rate);
     void clearUiData();
 
     void retargetWaveforms();
@@ -156,13 +177,14 @@ private:
     void refreshValueLabels();
     void refreshBioSideTexts();
     void refreshGestureLabel();
+    void refreshSdkLabel();
     void refreshInfoPanel();
     void updateLostPacketLabel();
 
     void setReplayModeUi(bool replaying);
     void startSingleReplay(const QString& path);
     // Registers one started replay member: device state + [Replay] list row.
-    QString addReplayMember(const std::shared_ptr<sensor::SensorProfile>& profile,
+    QString addReplayMember(sensor::SensorProfile* profile,
                             const sensor::BinFileInfo& info);
     void finishReplayMember(const QString& mac);
     void onReplayDone(const QString& message);
@@ -173,7 +195,7 @@ private:
         QMetaObject::invokeMethod(this, std::forward<F>(fn), Qt::QueuedConnection);
     }
 
-    std::shared_ptr<sensor::SensorController> _controller;
+    std::unique_ptr<sensor::SensorController> _controller;
     std::shared_ptr<SdkBridge> _bridge;
 
     QVector<DeviceEntry> _discovered;
@@ -197,6 +219,7 @@ private:
     bool _replayPaused = false;
     bool _replayDoneFired = false;
     int _replayMemberTotal = 0;
+    bool _replayStarting = false;
 
     // Per-device log/bin export paths reused across reconnects.
     QMap<QString, QString> _lastLogPaths;
@@ -210,6 +233,8 @@ private:
 
     std::thread _analyzeThread;
     std::atomic<bool> _analyzeRunning{false};
+    std::thread _replayStartThread;
+    std::thread _dongleCheckThread;
 
     // Data queue: the dataSink only enqueues each batch; the worker thread
     // drains the queue into the DeviceState rings and the plot timer
@@ -279,12 +304,14 @@ private:
     QPushButton* _btnReplayStop = nullptr;
     QPushButton* _btnMultiSync = nullptr;
     QPushButton* _btnMultiReplay = nullptr;
+    QPushButton* _btnCheckDongle = nullptr;
     QCheckBox* _chkAutoReconnect = nullptr;
     QCheckBox* _chkCloneData = nullptr;
     QComboBox* _typeCombo = nullptr;
     QComboBox* _filterCombo = nullptr;
     QLabel* _statusLabel = nullptr;
     QLabel* _sdkLabel = nullptr;
+    QString _shownBackend;
     QLabel* _rateLabel = nullptr;
     QLabel* _modelLabel = nullptr;
     QLabel* _hwLabel = nullptr;
@@ -302,6 +329,17 @@ private:
     // EEG sample-rate radios (rate Hz -> radio).
     QMap<int, QRadioButton*> _sampleRateRadios;
     QButtonGroup* _sampleRateGroup = nullptr;
+    QGroupBox* _rateGroupBox = nullptr;
+    // EMG/IMU/PPG sample-rate radios, same layout as the EEG set.
+    QMap<int, QRadioButton*> _emgSampleRateRadios;
+    QButtonGroup* _emgSampleRateGroup = nullptr;
+    QGroupBox* _emgRateGroupBox = nullptr;
+    QMap<int, QRadioButton*> _imuSampleRateRadios;
+    QButtonGroup* _imuSampleRateGroup = nullptr;
+    QGroupBox* _imuRateGroupBox = nullptr;
+    QMap<int, QRadioButton*> _ppgSampleRateRadios;
+    QButtonGroup* _ppgSampleRateGroup = nullptr;
+    QGroupBox* _ppgRateGroupBox = nullptr;
     WaveformWidget* _wave2d = nullptr;
     SpectrumWidget* _spectrum = nullptr;
     CubeWidget* _cube = nullptr;

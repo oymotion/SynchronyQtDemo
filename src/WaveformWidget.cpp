@@ -77,32 +77,49 @@ void WaveformWidget::paintEvent(QPaintEvent* /*event*/) {
         return;
     }
 
-    QMutexLocker lock(_mutex);
-    const RingBuffer& buf = *_buffer;
-    if (!buf.allocated || buf.length < 2 || plot.width() < 2) {
-        p.setPen(QColor(150, 150, 150));
-        p.drawText(plot, Qt::AlignCenter, _placeholder);
-        return;
-    }
-
-    QList<int> channels;
-    if (_channel >= 0) {
-        if (_channel < buf.channels) {
-            channels.append(_channel);
-        }
-    } else {
-        for (int ch = 0; ch < buf.channels; ++ch) {
-            channels.append(ch);
-        }
-    }
-    if (channels.isEmpty()) {
-        p.setPen(QColor(150, 150, 150));
-        p.drawText(plot, Qt::AlignCenter, _placeholder);
-        return;
-    }
-
     const int w = plot.width();
-    const int len = buf.length;
+
+    // Snapshot the drawn channels (oldest -> newest), then range and draw
+    // from the copies.
+    int snapLen = 0;
+    {
+        QMutexLocker lock(_mutex);
+        const RingBuffer& buf = *_buffer;
+        if (!buf.allocated || buf.length < 2 || w < 2) {
+            p.setPen(QColor(150, 150, 150));
+            p.drawText(plot, Qt::AlignCenter, _placeholder);
+            return;
+        }
+
+        QList<int> channels;
+        if (_channel >= 0) {
+            if (_channel < buf.channels) {
+                channels.append(_channel);
+            }
+        } else {
+            for (int ch = 0; ch < buf.channels; ++ch) {
+                channels.append(ch);
+            }
+        }
+        if (channels.isEmpty()) {
+            p.setPen(QColor(150, 150, 150));
+            p.drawText(plot, Qt::AlignCenter, _placeholder);
+            return;
+        }
+
+        snapLen = buf.length;
+        _snapshot.resize(static_cast<size_t>(channels.size()));
+        for (size_t k = 0; k < _snapshot.size(); ++k) {
+            ChannelSnapshot& snap = _snapshot[k];
+            snap.channel = channels[static_cast<int>(k)];
+            snap.samples.resize(static_cast<size_t>(snapLen));
+            const auto& src = buf.samples[snap.channel];
+            const int wi = buf.writeIndex;
+            for (int i = 0; i < snapLen; ++i) {
+                snap.samples[static_cast<size_t>(i)] = src[(wi + i) % snapLen];
+            }
+        }
+    }
 
     // Resolve the Y range (fixed, or auto from the visible samples).
     double low = _fixedLow;
@@ -110,11 +127,10 @@ void WaveformWidget::paintEvent(QPaintEvent* /*event*/) {
     if (!_fixedRange) {
         double mn = std::numeric_limits<double>::max();
         double mx = std::numeric_limits<double>::lowest();
-        for (int ch : channels) {
-            const auto& samples = buf.samples[ch];
-            const int step = qMax(1, len / (w * 2));
-            for (int i = 0; i < len; i += step) {
-                const double v = samples[(buf.writeIndex + i) % len];
+        const int step = qMax(1, snapLen / (w * 2));
+        for (const ChannelSnapshot& snap : _snapshot) {
+            for (int i = 0; i < snapLen; i += step) {
+                const double v = snap.samples[static_cast<size_t>(i)];
                 mn = std::min(mn, v);
                 mx = std::max(mx, v);
             }
@@ -136,23 +152,21 @@ void WaveformWidget::paintEvent(QPaintEvent* /*event*/) {
 
     p.setClipRect(plot);
     int labelRow = 0;
-    for (int ch : channels) {
-        const int colorIdx = _colorIndex >= 0 ? _colorIndex : ch;
+    for (const ChannelSnapshot& snap : _snapshot) {
+        const int colorIdx = _colorIndex >= 0 ? _colorIndex : snap.channel;
         const QColor color = kChannelColors[colorIdx % kChannelColorCount];
-        QPolygonF points;
-        points.reserve(w);
-        const auto& samples = buf.samples[ch];
+        _poly.resize(w);
         for (int x = 0; x < w; ++x) {
-            const int si = static_cast<int>(static_cast<qint64>(x) * len / w);
-            const double v = samples[(buf.writeIndex + si) % len];
+            const int si = static_cast<int>(static_cast<qint64>(x) * snapLen / w);
+            const double v = snap.samples[static_cast<size_t>(si)];
             double ty = plot.bottom() - 1 - (v - low) / span * (plot.height() - 2);
-            points.append(QPointF(plot.left() + x, ty));
+            _poly[x] = QPointF(plot.left() + x, ty);
         }
         p.setPen(QPen(color, 1));
-        p.drawPolyline(points);
+        p.drawPolyline(_poly);
 
         QString label = labelRow < _labels.size() ? _labels[labelRow]
-                                                  : QStringLiteral("ch%1").arg(ch);
+                                                  : QStringLiteral("ch%1").arg(snap.channel);
         p.drawText(plot.left() + 4, plot.top() + 12 + labelRow * 13, label);
         ++labelRow;
     }

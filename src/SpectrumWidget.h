@@ -2,6 +2,7 @@
 #define SPECTRUMWIDGET_H
 
 #include <QColor>
+#include <QPolygonF>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -34,6 +35,7 @@ protected:
 private:
     std::vector<float> _freqs;
     std::vector<std::vector<float>> _mags;
+    QPolygonF _poly;  // reusable paint buffer
     QStringList _labels;
     int _colorIndex = -1;
     QString _placeholder = QStringLiteral("Not connected");
