@@ -17,8 +17,8 @@ Nothing to build first — the prebuilt SDK ships in this repository:
 
 ```
 include/                                  public SDK headers
-lib/windows/x64/<Debug|Release>/          sensor.dll + sensor.lib
-lib/windows/x86/<Debug|Release>/          sensor32.dll + sensor32.lib (32-bit)
+lib/windows/x64/Release/                    sensor.dll + sensor.lib
+lib/windows/x86/Release/                    sensor32.dll + sensor32.lib (32-bit)
 lib/linux/x86_64/libsensor.so
 lib/linux/x86/libsensor.so                (32-bit)
 lib/linux/arm64/libsensor.so              (ARM64)
@@ -430,7 +430,8 @@ cmake --build --preset qt-demo-x86-release        # -> build_x86/Release/DemoEMG
 ```
 
 A post-build step copies the SDK dll and runs `windeployqt`, so the folder is
-self-contained.
+self-contained. The Windows package ships Release libraries only: a Debug
+build of the demo also links and deploys the Release dll.
 
 macOS:
 
