@@ -63,6 +63,17 @@
             }
         },
         {
+            "name": "qt-demo-linux-arm64",
+            "displayName": "Qt Demo (Linux arm64; requires QT_LINUX_KIT env)",
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build_linux_arm64",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_PREFIX_PATH": "$env{QT_LINUX_KIT}",
+                "SENSOR_SDK_LINUX_ARCH": "arm64"
+            }
+        },
+        {
             "name": "qt-demo-ios",
             "displayName": "Qt Demo (iOS device; requires QT_IOS_KIT env)",
             "generator": "Xcode",
@@ -119,6 +130,10 @@
         {
             "name": "qt-demo-linux",
             "configurePreset": "qt-demo-linux"
+        },
+        {
+            "name": "qt-demo-linux-arm64",
+            "configurePreset": "qt-demo-linux-arm64"
         },
         {
             "name": "qt-demo-ios",

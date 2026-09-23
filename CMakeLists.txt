@@ -202,12 +202,24 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         IMPORTED_NO_SONAME TRUE
     )
     target_link_libraries(DemoEMG PRIVATE sensorsdk)
-    # The executable finds libsensor.so next to itself.
+    # The executable finds the SDK library next to itself.
     set_target_properties(DemoEMG PROPERTIES BUILD_RPATH "$ORIGIN")
+    # The linker records the SDK's SONAME (e.g. libsensor_arm64.so), so the
+    # runtime lookup uses that name rather than libsensor.so — deploy the
+    # copy under the SONAME.
+    set(SENSOR_LINUX_SONAME "libsensor.so")
+    if(CMAKE_READELF)
+        execute_process(COMMAND "${CMAKE_READELF}" -d "${SENSOR_LINUX_LIB}"
+            OUTPUT_VARIABLE _sensor_dyn
+            ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(_sensor_dyn MATCHES "SONAME[^[]*\\[([^]]+)\\]")
+            set(SENSOR_LINUX_SONAME "${CMAKE_MATCH_1}")
+        endif()
+    endif()
     add_custom_command(TARGET DemoEMG POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${SENSOR_LINUX_LIB}"
-            "$<TARGET_FILE_DIR:DemoEMG>/libsensor.so"
+            "$<TARGET_FILE_DIR:DemoEMG>/${SENSOR_LINUX_SONAME}"
     )
 else()
     message(FATAL_ERROR "DemoEMG supports Windows, Linux, macOS, iOS and Android only")
