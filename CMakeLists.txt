@@ -29,7 +29,7 @@ endif()
 #
 # The package layout:
 #   include/                                  public SDK headers
-#   lib/windows/<x64|x86>/<Debug|Release>/    sensor.dll/.lib (x86: sensor32.*)
+#   lib/windows/<x64|x86>/Release/            sensor.dll/.lib (x86: sensor32.*)
 #   lib/linux/<x86_64|x86|arm64>/libsensor.so
 #   lib/android/<abi>/libsensor.so            arm64-v8a, armeabi-v7a, x86, x86_64
 #   lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator
@@ -145,12 +145,14 @@ elseif(IOS)
         XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0"
     )
 elseif(WIN32)
+    # The package ships Release libraries only; every build config links and
+    # deploys the Release dll.
     if(SENSOR_SDK_WIN_ARCH STREQUAL "x86")
-        set(SENSOR_WIN_LIB "${SENSOR_SDK_ROOT}/lib/windows/x86/$<CONFIG>/sensor32.lib")
-        set(SENSOR_WIN_DLL "${SENSOR_SDK_ROOT}/lib/windows/x86/$<CONFIG>/sensor32.dll")
+        set(SENSOR_WIN_LIB "${SENSOR_SDK_ROOT}/lib/windows/x86/Release/sensor32.lib")
+        set(SENSOR_WIN_DLL "${SENSOR_SDK_ROOT}/lib/windows/x86/Release/sensor32.dll")
     else()
-        set(SENSOR_WIN_LIB "${SENSOR_SDK_ROOT}/lib/windows/x64/$<CONFIG>/sensor.lib")
-        set(SENSOR_WIN_DLL "${SENSOR_SDK_ROOT}/lib/windows/x64/$<CONFIG>/sensor.dll")
+        set(SENSOR_WIN_LIB "${SENSOR_SDK_ROOT}/lib/windows/x64/Release/sensor.lib")
+        set(SENSOR_WIN_DLL "${SENSOR_SDK_ROOT}/lib/windows/x64/Release/sensor.dll")
     endif()
     target_link_libraries(DemoEMG PRIVATE "${SENSOR_WIN_LIB}")
 
