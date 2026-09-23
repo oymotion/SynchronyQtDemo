@@ -55,6 +55,7 @@ public:
     RingBuffer eeg;
     RingBuffer ecg;
     RingBuffer brth;
+    RingBuffer magAngle;
     RingBuffer ppg;
     RingBuffer spo2;
     RingBuffer quat;
@@ -80,15 +81,17 @@ public:
 
     // Actual sample-rate accounting (settled once per second by the UI).
     mutable QMutex rateMutex;
-    QMap<int, qint64> rateCounts;       // type -> samples in current window
-    QMap<int, double> actualRates;      // type -> measured samples/second
-    QMap<int, float> nominalRates;      // type -> batch-reported sample rate
-    QMap<int, int> nominalChannels;     // type -> batch-reported channel count
-    qint64 rateWindowStartMs = 0;
-    // Stream-start wall clock (Unix seconds, 0 = unknown) and first-packet
-    // delay (ms, 0 = not reported) of the current session, captured from the
-    // data batches.
-    double streamStartTimeSec = 0;
+    QMap<int, qint64> rateTotalCounts;    // type -> accumulated valid samples
+    QMap<int, qint64> rateStreamStartMs;  // type -> first-packet wall ms of the current stream session
+    QMap<int, quint32> rateStreamTags;    // type -> session tag (a stream restart re-accumulates)
+    QMap<int, double> actualRates;        // type -> measured samples/second
+    QMap<int, float> nominalRates;        // type -> batch-reported sample rate
+    QMap<int, int> nominalChannels;       // type -> batch-reported channel count
+    qint64 rateLastDataMs = 0;
+    // Stream-start wall clock (Unix seconds, 0 = unknown) per data type and
+    // first-packet delay (ms, 0 = not reported) of the current session,
+    // captured from the data batches.
+    QMap<int, double> streamStartTimeSecs;
     quint32 streamDelayMs = 0;
 
     QMap<QString, int> lostCounts;      // type label -> latest lost sample count
@@ -127,6 +130,11 @@ public:
     bool syncSampleRates();
     void clearBuffers();
     void updateActualRates();
+
+private:
+    void noteRateSamples(int type, quint32 sessionTag, qint64 valid);
+
+public:
     QString buildStatusText() const;
     QString buildRateText() const;
 

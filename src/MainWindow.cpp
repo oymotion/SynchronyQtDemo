@@ -48,19 +48,17 @@ const int CMD_TIMEOUT_MS = 5000;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.19";
+const char* const DEMO_VERSION = "0.1.32";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
 const int POWER_STABLE_BAND = 4;
 const unsigned int REPLAY_DELEGATE_TIMEOUT_MS = 5000;
-// Multi start/stop defaults; mixed device models use the relaxed set
-// (60000, -1, 5) inline at the call site.
-const int MULTI_START_TIMEOUT_MS = 30000;
+// Multi stop default; multi start timing is chosen by the SDK.
 const int MULTI_STOP_TIMEOUT_MS = 10000;
 
 // Data Notification keys.
-const char* const kNtfKeys[] = {"NTF_EEG", "NTF_EMG", "NTF_GEST", "NTF_PPG", "NTF_SPO2", "NTF_IMU"};
+const char* const kNtfKeys[] = {"NTF_EEG", "NTF_IMPEDANCE", "NTF_EMG", "NTF_GEST", "NTF_PPG", "NTF_SPO2", "NTF_IMU", "NTF_MAG_ANGLE"};
 const char* const kFilterKeys[] = {"FILTER_50HZ", "FILTER_60HZ", "FILTER_HPF", "FILTER_LPF"};
 // EEG Sample Rate radio candidates.
 const QVector<int> kSampleRateCandidates = {250, 500, 1000, 2000};
@@ -162,6 +160,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (_debugLogEnabled) {
         applySdkDebugLog();
     }
+
+    applyDongleDebug();
 
     _plotTimer = new QTimer(this);
     connect(_plotTimer, &QTimer::timeout, this, &MainWindow::onPlotTick);
@@ -526,16 +526,22 @@ QWidget* MainWindow::buildSettingsPage() {
     _chkBinData->setChecked(true);
     connect(_chkBinData, &QCheckBox::stateChanged, this, &MainWindow::onBinDataToggled);
     debugLayout->addWidget(_chkBinData);
+    _chkDongleDebug = new QCheckBox(QStringLiteral("Enable debug dongle"), page);
+    _chkDongleDebug->setChecked(true);
+    connect(_chkDongleDebug, &QCheckBox::stateChanged, this, &MainWindow::onDongleDebugToggled);
+    debugLayout->addWidget(_chkDongleDebug);
 
     auto* ntfGroup = new QGroupBox(QStringLiteral("Data Notification"), page);
     auto* ntfLayout = new QHBoxLayout(ntfGroup);
     const QMap<QString, QString> ntfLabels = {
         {QStringLiteral("NTF_EEG"), QStringLiteral("EEG")},
+        {QStringLiteral("NTF_IMPEDANCE"), QStringLiteral("IMPE")},
         {QStringLiteral("NTF_EMG"), QStringLiteral("EMG")},
         {QStringLiteral("NTF_GEST"), QStringLiteral("GESTURE")},
         {QStringLiteral("NTF_PPG"), QStringLiteral("PPG")},
         {QStringLiteral("NTF_SPO2"), QStringLiteral("SpO2")},
         {QStringLiteral("NTF_IMU"), QStringLiteral("IMU")},
+        {QStringLiteral("NTF_MAG_ANGLE"), QStringLiteral("Angle")},
     };
     for (const char* key : kNtfKeys) {
         auto* cb = new QCheckBox(ntfLabels.value(QString::fromLatin1(key)), page);
@@ -1302,7 +1308,10 @@ void MainWindow::onDeviceInfoUpdate(QString mac) {
     if (!st) {
         return;
     }
-    st->info = st->profile->getDeviceInfo();
+    const sensor::DeviceInfo* updated = st->profile->getDeviceInfo();
+    if (updated != nullptr) {
+        st->info = *updated;
+    }
     st->hasInfo = true;
     // A changed sample rate invalidates the ring time windows; rebuild the
     // affected rings.
@@ -1551,14 +1560,18 @@ void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>&
     const int imuCh = st->hasInfo ? qMax<int>(st->info.AccChannelCount, st->info.GyroChannelCount) : 0;
     const int ppgCh = st->hasInfo ? st->info.PpgChannelCount : 0;
     const int spo2Ch = st->hasInfo ? st->info.Spo2ChannelCount : 0;
+    const int magCh = st->hasInfo ? st->info.MagAngleChannelCount : 0;
+    const int impeCh = st->hasInfo ? st->info.ImpeChannelCount : 0;
     const QMap<QString, int> channelMap = {
         {QStringLiteral("NTF_EEG"), eegCh},
+        {QStringLiteral("NTF_IMPEDANCE"), impeCh},
         {QStringLiteral("NTF_EMG"), emgCh},
         // GEST shares the EMG channel count.
         {QStringLiteral("NTF_GEST"), emgCh},
         {QStringLiteral("NTF_PPG"), ppgCh},
         {QStringLiteral("NTF_SPO2"), spo2Ch},
         {QStringLiteral("NTF_IMU"), imuCh},
+        {QStringLiteral("NTF_MAG_ANGLE"), magCh},
     };
 
     const QString ntfResult = results.value(QStringLiteral("NTF"));
@@ -1752,6 +1765,24 @@ void MainWindow::onBinDataToggled(int state) {
     }
 }
 
+void MainWindow::applyDongleDebug() {
+    const QString value = _dongleDebugEnabled ? QStringLiteral("True") : QStringLiteral("False");
+    _controller->setParam("BLE_TRACE_ENABLED", value.toStdString(),
+                          [this, value](const std::string& result, const std::string&) {
+                              postToGui([this, value, result]() {
+                                  appLog(QStringLiteral("App: setParam(BLE_TRACE_ENABLED, %1) -> %2")
+                                             .arg(value, QString::fromStdString(result)));
+                              });
+                          });
+}
+
+void MainWindow::onDongleDebugToggled(int state) {
+    _dongleDebugEnabled = (state == Qt::Checked);
+    appLog(QStringLiteral("User: dongle debug %1")
+               .arg(_dongleDebugEnabled ? QStringLiteral("ON") : QStringLiteral("OFF")));
+    applyDongleDebug();
+}
+
 void MainWindow::onAutoReconnectToggled(bool checked) {
     appLog(QStringLiteral("User: auto reconnect %1")
                .arg(checked ? QStringLiteral("ON") : QStringLiteral("OFF")));
@@ -1849,7 +1880,8 @@ int MainWindow::bioPageCount(const std::shared_ptr<DeviceState>& st) const {
         return 1;
     }
     const int extras = (st->info.ECGChannelCount > 0 ? 1 : 0)
-                       + (st->info.BRTHChannelCount > 0 ? 1 : 0);
+                       + (st->info.BRTHChannelCount > 0 ? 1 : 0)
+                       + (st->info.MagAngleChannelCount > 0 ? 1 : 0);
     const int perPage = _bioWidgets.size() - extras;
     const int total = st->info.EEGChannelCount > 0 ? st->info.EEGChannelCount
                       : st->eeg.allocated ? st->eeg.channels : 0;
@@ -1909,18 +1941,33 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                                : QStringLiteral("Not connected");
 
     if (kind == DeviceState::BioKind::EMG) {
-        // EMG device: up to 8 EMG channels, no paging.
-        _bioTitleLabel->setText(QStringLiteral("EMG Waveform"));
-        const int emgCh = st->emg.allocated ? qMin(st->emg.channels, _bioWidgets.size()) : 0;
+        // EMG device: up to 8 EMG channels, no paging. A mag-angle stream
+        // takes the row right after the EMG channel rows (a mag-only device
+        // uses this mode too); the Angle row also splits with a spectrum.
+        const bool hasMag = st->info.MagAngleChannelCount > 0 || st->magAngle.allocated;
+        const int emgCh = st->emg.allocated ? qMin(st->emg.channels, _bioWidgets.size() - int(hasMag)) : 0;
+        const int magIndex = emgCh;
+        _bioTitleLabel->setText(hasMag && emgCh > 0 ? QStringLiteral("EMG + Angle Waveform")
+                                : hasMag ? QStringLiteral("Angle Waveform")
+                                         : QStringLiteral("EMG Waveform"));
         for (int i = 0; i < _bioWidgets.size(); ++i) {
             if (i < emgCh) {
                 _bioWidgets[i]->setSource(&st->emg, &st->bufMutex, i);
+                _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({QStringLiteral("EMG-%1").arg(i + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, &st->emg, i, i, QStringLiteral("EMG-%1").arg(i + 1));
                 _bioTargets.append({&st->emgImpedance, i});
+            } else if (hasMag && i == magIndex && st->magAngle.allocated) {
+                _bioWidgets[i]->setSource(&st->magAngle, &st->bufMutex, 0, i);
+                _bioWidgets[i]->setFixedYRange(0.0, 180.0);
+                _bioWidgets[i]->setLabels({QStringLiteral("Angle")});
+                _bioWidgets[i]->setPlaceholder(QString());
+                setBioSpectrum(i, &st->magAngle, 0, i, QStringLiteral("Angle"));
+                _bioTargets.append(BioTarget{});
             } else {
                 _bioWidgets[i]->setSource(nullptr, nullptr, i);
+                _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({});
                 _bioWidgets[i]->setPlaceholder(waiting);
                 _bioWidgets[i]->setSideText(QString(), Qt::white);
@@ -1929,46 +1976,60 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
             }
         }
     } else if (kind == DeviceState::BioKind::EEG) {
-        // EEG device: channels per page = 8 - hasECG - hasBRTH; the current
-        // page's EEG channels fill the leading widgets, ECG takes the last
-        // widget (second-to-last when BRTH follows), BRTH the last. EEG
-        // channel rows and the ECG row split 50/50 with a spectrum on the
-        // left; BRTH / unused rows stay full-width.
-        _bioTitleLabel->setText(QStringLiteral("EEG + ECG + BRTH Waveform"));
+        // EEG device: channels per page = 8 - hasECG - hasBRTH - hasMag; the
+        // current page's EEG channels fill the leading widgets, the extra
+        // rows sit at the bottom: BRTH last, ECG above it, Angle above ECG.
+        // EEG channel rows and the ECG/Angle rows split 50/50 with a spectrum
+        // on the left; BRTH / unused rows stay full-width.
         const bool hasECG = st->info.ECGChannelCount > 0 || st->ecg.allocated;
         const bool hasBRTH = st->info.BRTHChannelCount > 0 || st->brth.allocated;
-        const int perPage = _bioWidgets.size() - int(hasECG) - int(hasBRTH);
+        const bool hasMag = st->info.MagAngleChannelCount > 0 || st->magAngle.allocated;
+        _bioTitleLabel->setText(hasMag ? QStringLiteral("EEG + ECG + BRTH + Angle Waveform")
+                                       : QStringLiteral("EEG + ECG + BRTH Waveform"));
+        const int perPage = _bioWidgets.size() - int(hasECG) - int(hasBRTH) - int(hasMag);
         const int total = st->info.EEGChannelCount > 0 ? st->info.EEGChannelCount
                           : st->eeg.allocated ? st->eeg.channels : 0;
         const int pages = qMax(1, (total + perPage - 1) / perPage);
         _bioPage = qBound(0, _bioPage, pages - 1);
         const int startCh = _bioPage * perPage;
-        const int ecgIndex = _bioWidgets.size() - 1 - int(hasBRTH);
         const int brthIndex = _bioWidgets.size() - 1;
+        const int ecgIndex = brthIndex - int(hasBRTH);
+        const int magIndex = ecgIndex - int(hasECG);
         for (int i = 0; i < _bioWidgets.size(); ++i) {
             const int eegCh = startCh + i;
             if (i < perPage && eegCh < total && st->eeg.allocated) {
                 // Pass the real channel index so the waveform color stays
                 // stable per channel across pages.
                 _bioWidgets[i]->setSource(&st->eeg, &st->bufMutex, eegCh);
+                _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({QStringLiteral("EEG-%1").arg(eegCh + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, &st->eeg, eegCh, eegCh, QStringLiteral("EEG-%1").arg(eegCh + 1));
                 _bioTargets.append({&st->eegImpedance, eegCh});
             } else if (hasECG && i == ecgIndex && st->ecg.allocated) {
                 _bioWidgets[i]->setSource(&st->ecg, &st->bufMutex, 0);
+                _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({QStringLiteral("ECG")});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, &st->ecg, 0, 0, QStringLiteral("ECG"));
                 _bioTargets.append({&st->ecgImpedance, 0});
             } else if (hasBRTH && i == brthIndex && st->brth.allocated) {
                 _bioWidgets[i]->setSource(&st->brth, &st->bufMutex, 0);
+                _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({QStringLiteral("BRTH")});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, nullptr, -1, -1, QString());
                 _bioTargets.append({&st->brthImpedance, 0});
+            } else if (hasMag && i == magIndex && st->magAngle.allocated) {
+                _bioWidgets[i]->setSource(&st->magAngle, &st->bufMutex, 0, i);
+                _bioWidgets[i]->setFixedYRange(0.0, 180.0);
+                _bioWidgets[i]->setLabels({QStringLiteral("Angle")});
+                _bioWidgets[i]->setPlaceholder(QString());
+                setBioSpectrum(i, &st->magAngle, 0, i, QStringLiteral("Angle"));
+                _bioTargets.append(BioTarget{});
             } else {
                 _bioWidgets[i]->setSource(nullptr, nullptr, i);
+                _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({});
                 // Slots past the last EEG channel on the final page stay
                 // blank.
@@ -2011,6 +2072,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                     // Read the configured buffer channel; the widget index only
                     // drives the curve color so each plot gets its own.
                     _bioWidgets[i]->setSource(buf, &st->bufMutex, cfg.channel, i);
+                    _bioWidgets[i]->setAutoYRange();
                     _bioWidgets[i]->setLabels({QString::fromLatin1(cfg.label)});
                     _bioWidgets[i]->setPlaceholder(QString());
                     if (cfg.hasFft) {
@@ -2025,6 +2087,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
             }
             if (!bound) {
                 _bioWidgets[i]->setSource(nullptr, nullptr, i);
+                _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({});
                 // Slots within the plot set wait for their buffer; the
                 // trailing widgets stay blank.
@@ -2038,6 +2101,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
         _bioTitleLabel->setText(QStringLiteral("EMG / EEG Waveform"));
         for (int i = 0; i < _bioWidgets.size(); ++i) {
             _bioWidgets[i]->setSource(nullptr, nullptr, i);
+            _bioWidgets[i]->setAutoYRange();
             _bioWidgets[i]->setLabels({});
             _bioWidgets[i]->setPlaceholder(waiting);
             _bioWidgets[i]->setSideText(QString(), Qt::white);
@@ -2078,11 +2142,14 @@ void MainWindow::refreshBioSideTexts() {
     if (!st || _bioTargets.size() != _bioWidgets.size()) {
         return;
     }
+    const auto impe = st->ntfStates.value(QStringLiteral("NTF_IMPEDANCE"), {false, false});
+    const bool impedanceOn = impe.first && impe.second;
     QMutexLocker lock(&st->bufMutex);
     for (int i = 0; i < _bioWidgets.size(); ++i) {
         const auto& target = _bioTargets[i];
-        if (target.impedance == nullptr || target.channel >= target.impedance->size()
+        if (!impedanceOn || target.impedance == nullptr || target.channel >= target.impedance->size()
             || (*target.impedance)[target.channel] < 0) {
+            _bioWidgets[i]->setSideText(QString(), Qt::white);
             continue;
         }
         const double kOhm = (*target.impedance)[target.channel] / 1000.0;
@@ -2110,13 +2177,24 @@ void MainWindow::refreshGestureLabel() {
 }
 
 void MainWindow::refreshSdkLabel() {
-    const QString backend = QString::fromStdString(_controller->getParam("BACK_END"));
-    if (backend == _shownBackend) {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (_backendQueryPending || now - _backendQueryMs < 1000) {
         return;
     }
-    _shownBackend = backend;
-    _sdkLabel->setText(QStringLiteral("SDK: %1 | Backend: %2")
-                           .arg(QString::fromStdString(_controller->getVersion()), _shownBackend));
+    _backendQueryPending = true;
+    _backendQueryMs = now;
+    _controller->getParam("BACK_END", [this](const std::string& result, const std::string&) {
+        const QString backend = QString::fromStdString(result);
+        postToGui([this, backend]() {
+            _backendQueryPending = false;
+            if (backend == _shownBackend || backend.startsWith(QStringLiteral("Error"))) {
+                return;
+            }
+            _shownBackend = backend;
+            _sdkLabel->setText(QStringLiteral("SDK: %1 | Backend: %2")
+                                   .arg(QString::fromStdString(_controller->getVersion()), _shownBackend));
+        });
+    });
 }
 
 void MainWindow::refreshInfoPanel() {
@@ -2198,17 +2276,6 @@ void MainWindow::doMultiStart() {
     appLog(QStringLiteral("User: multi start on %1 device(s)").arg(sensors.size()));
     _btnMultiSync->setEnabled(false);
 
-    // Same model for all devices -> default timing; mixed models -> no
-    // dispersion check, longer timeout, more attempts.
-    QSet<QString> models;
-    for (const auto& s : sensors) {
-        models.insert(QString::fromStdString(s->getDeviceInfo().modelName));
-    }
-    const bool sameModel = models.size() == 1 && !models.contains(QString());
-    const int startTimeout = sameModel ? MULTI_START_TIMEOUT_MS : 60000;
-    const int dispersion = sameModel ? 5 : -1;
-    const int attempts = sameModel ? 3 : 5;
-
     std::vector<sensor::SensorProfile*> transferring;
     for (const auto& s : sensors) {
         if (s->hasStartDataNotification()) {
@@ -2216,8 +2283,8 @@ void MainWindow::doMultiStart() {
         }
     }
 
-    auto startAll = [this, sensors, startTimeout, dispersion, attempts]() {
-        _controller->multiStartData(sensors, startTimeout, dispersion, attempts,
+    auto startAll = [this, sensors]() {
+        _controller->multiStartData(sensors, 0, -1, 1,
             [this](const std::map<std::string, std::pair<bool, std::string>>& results) {
                 postToGui([this, results]() {
                     QStringList failed;
@@ -2305,6 +2372,7 @@ void MainWindow::setReplayModeUi(bool replaying) {
     _deviceList->setEnabled(!replaying);
     _chkDebugLog->setEnabled(!replaying);
     _chkBinData->setEnabled(!replaying);
+    _chkDongleDebug->setEnabled(!replaying);
     _btnReplay->setEnabled(!replaying);
     _btnMultiReplay->setEnabled(!replaying);
     _btnReplayPause->setEnabled(replaying);
@@ -2358,7 +2426,8 @@ void MainWindow::startSingleReplay(const QString& path) {
             });
             return;
         }
-        auto profile = _controller->replayBinFile(path.toStdString(), info.mac, true,
+        auto profile = _controller->replayBinFile(path.toStdString(),
+                                                  _controller->requireSensor(info.mac), true,
                                                   REPLAY_DELEGATE_TIMEOUT_MS);
         postToGui([this, path, info, profile]() {
             _replayStarting = false;
@@ -2415,12 +2484,8 @@ void MainWindow::onCheckDongleClicked() {
     appLog(QStringLiteral("User: check setup dongle"));
     _btnCheckDongle->setEnabled(false);
     _btnCheckDongle->setText(QStringLiteral("Checking Dongle..."));
-    if (_dongleCheckThread.joinable()) {
-        _dongleCheckThread.join();
-    }
-    _dongleCheckThread = std::thread([this]() {
-        const auto check = sensor::SensorController::checkSetupDongle();
-        const QString result = QString::fromStdString(check.second);
+    _controller->checkSetupDongle([this](const std::string& check, const std::string&) {
+        const QString result = QString::fromStdString(check);
         postToGui([this, result]() {
             appLog(QStringLiteral("App: check dongle result: %1").arg(result.section('\n', 0, 0)));
             _btnCheckDongle->setEnabled(true);
@@ -2428,10 +2493,35 @@ void MainWindow::onCheckDongleClicked() {
             if (result.startsWith(QStringLiteral("OK"))) {
                 const QString firstLine = result.section('\n', 0, 0);
                 const QString extra = result.section('\n', 1).trimmed();
-                QString msg = QStringLiteral("USB BLE dongle is ready (driver installed and usable by the SDK).");
+                const bool anyConnected = !_controller->getConnectedSensors().empty();
+                QString msg;
                 const int colon = firstLine.indexOf(':');
                 if (colon >= 0) {
-                    msg += QStringLiteral("\nUsable dongle count: %1").arg(firstLine.mid(colon + 1).trimmed());
+                    // "OK: N" or "OK: N/M" (N free, M total plugged)
+                    const QString counts = firstLine.mid(colon + 1).trimmed();
+                    const QString usable = counts.section('/', 0, 0);
+                    const QString total = counts.section('/', 1, 1);
+                    if (usable == QLatin1String("0") && anyConnected) {
+                        msg = QStringLiteral("Every USB BLE dongle is in use by the current connections.");
+                        if (!total.isEmpty()) {
+                            msg += QStringLiteral("\nTotal dongles plugged: %1").arg(total);
+                        }
+                        msg += QStringLiteral("\nDisconnect a device to free one.");
+                    } else if (usable == QLatin1String("0")) {
+                        msg = QStringLiteral("USB BLE dongle(s) plugged in but none is usable by the SDK (driver not bound to WinUSB).");
+                        if (!total.isEmpty()) {
+                            msg += QStringLiteral("\nTotal dongles plugged: %1").arg(total);
+                        }
+                        msg += QStringLiteral("\nDisconnect all devices and run Check Dongle again to set up the driver.");
+                    } else {
+                        msg = QStringLiteral("USB BLE dongle is ready (driver installed and usable by the SDK).");
+                        msg += QStringLiteral("\nUsable dongle count: %1").arg(usable);
+                        if (!total.isEmpty()) {
+                            msg += QStringLiteral("\nTotal dongles plugged: %1").arg(total);
+                        }
+                    }
+                } else {
+                    msg = QStringLiteral("No usable USB BLE dongle detected; the SDK is using the OS Bluetooth stack.");
                 }
                 if (!extra.isEmpty()) {
                     msg += QStringLiteral("\n") + extra;
@@ -2475,7 +2565,8 @@ void MainWindow::onMultiReplayClicked() {
         _replayStartThread.join();
     }
     _replayStartThread = std::thread([this, paths]() {
-        std::vector<std::pair<std::string, std::string>> pathMacList;
+        std::vector<std::string> pathList;
+        std::vector<sensor::SensorProfile*> sensorList;
         QVector<sensor::BinFileInfo> infos;
         QSet<QString> macs;
         for (const QString& path : paths) {
@@ -2499,11 +2590,12 @@ void MainWindow::onMultiReplayClicked() {
                 return;
             }
             macs.insert(mac);
-            pathMacList.emplace_back(path.toStdString(), info.mac);
+            pathList.push_back(path.toStdString());
+            sensorList.push_back(_controller->requireSensor(info.mac));
             infos.append(info);
         }
 
-        const auto profiles = _controller->multiReplayBinFile(pathMacList, true,
+        const auto profiles = _controller->multiReplayBinFile(pathList, sensorList, true,
                                                               REPLAY_DELEGATE_TIMEOUT_MS);
         postToGui([this, paths, infos, profiles]() {
             _replayStarting = false;
@@ -2713,16 +2805,13 @@ void MainWindow::onAnalyzeClicked() {
     _btnAnalyze->setEnabled(false);
     _statusLabel->setText(QStringLiteral("Analyzing: %1 ...").arg(QFileInfo(path).fileName()));
 
-    if (_analyzeThread.joinable()) {
-        _analyzeThread.join();
+    QString csv = path;
+    if (csv.endsWith(QStringLiteral(".bin"), Qt::CaseInsensitive)) {
+        csv.chop(4);
     }
-    _analyzeThread = std::thread([this, path]() {
-        QString csv = path;
-        if (csv.endsWith(QStringLiteral(".bin"), Qt::CaseInsensitive)) {
-            csv.chop(4);
-        }
-        csv += QStringLiteral(".csv");
-        const std::string result = _controller->parseBinToCsv(path.toStdString(), csv.toStdString());
+    csv += QStringLiteral(".csv");
+    _controller->parseBinToCsv(path.toStdString(), csv.toStdString(),
+                               [this](const std::string& result, const std::string&) {
         postToGui([this, result]() {
             _analyzeRunning = false;
             _btnAnalyze->setEnabled(true);
@@ -2937,7 +3026,8 @@ void MainWindow::onPlotTick() {
 
     // The bio buffers are lazily sized on the first batch; target the widgets
     // once the buffer for the device's bio mode exists.
-    const bool bioReady = st && ((st->bioKind() == DeviceState::BioKind::EMG && st->emg.allocated)
+    const bool bioReady = st && ((st->bioKind() == DeviceState::BioKind::EMG
+                                  && (st->emg.allocated || st->magAngle.allocated))
                                  || (st->bioKind() == DeviceState::BioKind::EEG && st->eeg.allocated)
                                  || (st->bioKind() == DeviceState::BioKind::PPG && st->ppg.allocated));
     if (bioReady && !_bioWidgets.isEmpty() && !_bioWidgets.first()->hasSource()) {
@@ -2986,14 +3076,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (_fftThread.joinable()) {
         _fftThread.join();
     }
-    if (_analyzeThread.joinable()) {
-        _analyzeThread.join();
-    }
     if (_replayStartThread.joinable()) {
         _replayStartThread.join();
-    }
-    if (_dongleCheckThread.joinable()) {
-        _dongleCheckThread.join();
     }
     sensor::SensorController::terminate();
     event->accept();

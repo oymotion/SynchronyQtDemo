@@ -64,6 +64,23 @@ NS_ASSUME_NONNULL_BEGIN
 @property (atomic, assign) int PeripheralLatency;
 @property (atomic, assign) int SupervisionTimeoutMs;
 @property (atomic, strong, nullable) NSString* backend;
+@property (atomic, assign) int GestChannelCount;
+@property (atomic, assign) float GestSampleRate;
+@end
+
+@interface BinSensorDataConfig : NSObject
+@property (nonatomic, assign, readonly) double sampleRate;
+@property (nonatomic, assign, readonly) double k;
+@property (nonatomic, assign, readonly) unsigned long long channelMask;
+@property (nonatomic, assign, readonly) int dataType;
+@property (nonatomic, assign, readonly) int typeIndex;
+@property (nonatomic, assign, readonly) int channelCount;
+@property (nonatomic, assign, readonly) int packageIndexLength;
+@property (nonatomic, assign, readonly) int resolutionBits;
+@property (nonatomic, assign, readonly) BOOL resolutionSigned;
+@property (nonatomic, assign, readonly) int rawDataBias;
+@property (nonatomic, assign, readonly) int packageSampleCount;
+@property (nonatomic, assign, readonly) int minPackageSampleCount;
 @end
 
 @interface BinFileInfo : NSObject
@@ -72,9 +89,31 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign, readonly) double durationSec;
 @property (nonatomic, assign, readonly) BOOL valid;
 @property (nonatomic, strong, readonly) DeviceInfo* deviceInfo;
+@property (nonatomic, assign, readonly) unsigned int configVersion;
+@property (nonatomic, assign, readonly) int chipType;
+@property (nonatomic, assign, readonly) BOOL isUniversalStream;
+@property (nonatomic, assign, readonly) BOOL isNewEmg;
+@property (nonatomic, assign, readonly) BOOL isContainQat6;
+@property (nonatomic, assign, readonly) int ppgModel;
+@property (nonatomic, assign, readonly) long long featureMap;
+@property (nonatomic, assign, readonly) long long notifyDataFlag;
+@property (nonatomic, strong, readonly) NSArray<BinSensorDataConfig*>* sensorDatas;
+@property (nonatomic, assign, readonly) unsigned long long firstDataTsMs;
+@property (nonatomic, assign, readonly) unsigned long long lastDataTsMs;
 - (instancetype)initWithMac:(NSString*)mac deviceName:(NSString*)deviceName
                 durationSec:(double)durationSec valid:(BOOL)valid
-                 deviceInfo:(DeviceInfo*)deviceInfo;
+                 deviceInfo:(DeviceInfo*)deviceInfo
+             configVersion:(unsigned int)configVersion
+                  chipType:(int)chipType
+         isUniversalStream:(BOOL)isUniversalStream
+                  isNewEmg:(BOOL)isNewEmg
+             isContainQat6:(BOOL)isContainQat6
+                  ppgModel:(int)ppgModel
+                featureMap:(long long)featureMap
+            notifyDataFlag:(long long)notifyDataFlag
+               sensorDatas:(NSArray<BinSensorDataConfig*>*)sensorDatas
+             firstDataTsMs:(unsigned long long)firstDataTsMs
+              lastDataTsMs:(unsigned long long)lastDataTsMs;
 @end
 
 @interface SensorData : NSObject
@@ -92,7 +131,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (atomic, assign, readonly) double startTimeSec;
 
 @property (nonatomic, readonly) const void* infoPointer;
-@property (nonatomic, readonly) const void* samplesPointer;
+@property (nonatomic, readonly) const void* _Nullable samplesPointer;
 
 @property (nonatomic, strong, readonly) NSData* rawSamples;
 @property (nonatomic, strong, readonly) NSData* rawInfo;

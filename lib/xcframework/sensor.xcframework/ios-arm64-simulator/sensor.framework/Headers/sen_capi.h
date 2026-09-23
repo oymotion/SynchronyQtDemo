@@ -25,7 +25,7 @@ extern "C" {
   #define SEN_ALIGN8 _Alignas(8)
 #endif
 
-#define SEN_CAPI_VERSION 14
+#define SEN_CAPI_VERSION 20
 
 typedef struct sen_controller sen_controller_t;
 typedef struct sen_profile sen_profile_t;
@@ -144,7 +144,26 @@ typedef struct {
     int32_t  PeripheralLatency;
     int32_t  SupervisionTimeoutMs;
     char     backend[16];
+    uint8_t  GestChannelCount;
+    uint16_t GestSampleRate;
 } sen_device_info_t;
+
+#define SEN_BIN_MAX_SENSOR_DATAS 14
+
+typedef struct {
+    SEN_ALIGN8 double   sampleRate;
+    SEN_ALIGN8 double   k;
+    SEN_ALIGN8 uint64_t channelMask;
+    int32_t  dataType;
+    uint8_t  typeIndex;
+    uint8_t  channelCount;
+    uint8_t  packageIndexLength;
+    uint8_t  resolutionBits;
+    uint8_t  resolutionSigned;
+    int8_t   rawDataBias;
+    uint16_t packageSampleCount;
+    uint16_t minPackageSampleCount;
+} sen_bin_sensor_data_config_t;
 
 typedef struct {
     uint32_t structSize;
@@ -154,6 +173,18 @@ typedef struct {
     uint8_t  valid;
     uint8_t  _reserved[7];
     sen_device_info_t deviceInfo;
+    uint32_t configVersion;
+    int32_t  chipType;
+    uint8_t  isUniversalStream;
+    uint8_t  isNewEmg;
+    uint8_t  isContainQat6;
+    uint8_t  ppgModel;
+    SEN_ALIGN8 int64_t featureMap;
+    SEN_ALIGN8 int64_t notifyDataFlag;
+    uint32_t sensorDataCount;
+    sen_bin_sensor_data_config_t sensorDatas[SEN_BIN_MAX_SENSOR_DATAS];
+    SEN_ALIGN8 uint64_t firstDataTsMs;
+    SEN_ALIGN8 uint64_t lastDataTsMs;
 } sen_bin_file_info_t;
 
 typedef void (*sen_scan_result_cb)(void* ctx, const sen_ble_device_t* devices, size_t count);
@@ -223,6 +254,7 @@ SEN_API int sen_controller_is_enable(sen_controller_t* ctrl);
 SEN_API int sen_controller_is_scanning(sen_controller_t* ctrl);
 SEN_API int sen_controller_start_scan(sen_controller_t* ctrl, int periodInMS);
 SEN_API int sen_controller_stop_scan(sen_controller_t* ctrl);
+SEN_API void sen_controller_scan_once(sen_controller_t* ctrl, int periodInMS, sen_scan_result_cb cb, void* ctx);
 
 SEN_API sen_profile_t* sen_controller_require_sensor(sen_controller_t* ctrl, const char* mac);
 SEN_API sen_profile_t* sen_controller_get_sensor(sen_controller_t* ctrl, const char* mac);
@@ -247,7 +279,7 @@ SEN_API void sen_controller_resume_bin_replay(sen_controller_t* ctrl, const char
 SEN_API void sen_controller_stop_bin_replay(sen_controller_t* ctrl, const char* deviceMac,
                                                   char* buf, size_t len);
 SEN_API void sen_controller_parse_bin_to_csv(sen_controller_t* ctrl, const char* binPath,
-                                                   const char* csvPath, char* buf, size_t len);
+                                                   const char* csvPath, sen_param_cb cb, void* ctx);
 
 SEN_API void sen_controller_get_version(sen_controller_t* ctrl, char* buf, size_t len);
 
@@ -264,12 +296,12 @@ SEN_API void sen_controller_multi_stop_data(sen_controller_t* ctrl,
                                             int timeoutMs,
                                             sen_multi_result_cb cb, void* ctx);
 
-SEN_API int sen_check_setup_dongle(char* out, int32_t out_cap);
+SEN_API void sen_controller_check_setup_dongle(sen_controller_t* ctrl, sen_param_cb cb, void* ctx);
 
 SEN_API void sen_controller_get_param(sen_controller_t* ctrl, const char* key,
-                                      char* buf, size_t len);
+                                      sen_param_cb cb, void* ctx);
 SEN_API void sen_controller_set_param(sen_controller_t* ctrl, const char* key,
-                                      const char* value, char* buf, size_t len);
+                                      const char* value, sen_param_cb cb, void* ctx);
 
 SEN_API void sen_profile_set_callbacks(sen_profile_t* profile,
                                              const sen_profile_cbs_t* cbs, void* ctx);

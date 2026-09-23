@@ -12,7 +12,9 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 
@@ -39,12 +41,24 @@ public final class SensorBleBridge {
                                                         int latency, int timeout);
     public static native void nativeOnNotifyStateChanged(GattCallbacks callback, String address, String charUuid,
                                                          boolean enabled);
+    public static native void nativeOnBluetoothStateChanged(boolean enabled);
 
     private native void nativeSetBridge();
 
     private final Context context;
     private final Context applicationContext;
     private final BluetoothAdapter bluetoothAdapter;
+    private final BroadcastReceiver bluetoothStateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+            if (state == BluetoothAdapter.STATE_ON) {
+                nativeOnBluetoothStateChanged(true);
+            } else if (state == BluetoothAdapter.STATE_OFF) {
+                nativeOnBluetoothStateChanged(false);
+            }
+        }
+    };
 
     public SensorBleBridge(Context context) {
         this.context = context;

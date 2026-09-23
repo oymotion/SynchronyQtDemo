@@ -9,12 +9,13 @@ NS_ASSUME_NONNULL_BEGIN
 @interface SensorProfile : NSObject
 @property (atomic, weak, nullable) id<SensorProfileDelegate> delegate;
 @property (nonatomic, strong, readonly) BLEDevice* device;
-@property (nonatomic, strong, readonly) DeviceInfo* deviceInfo;
+@property (nonatomic, strong, readonly, nullable) DeviceInfo* deviceInfo;
 @property (atomic, assign, readonly) BLEState deviceState;
 @property (atomic, assign, readonly) BOOL isReady;
 @property (nonatomic, readonly) NSString* stateString;
 @property (atomic, assign, readonly) bool hasInited;
 @property (atomic, assign, readonly) bool isDataTransfering;
+@property (atomic, assign, readonly) int cachedPower;
 
 - (void)connect:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
 - (void)disconnect:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
@@ -23,20 +24,32 @@ NS_ASSUME_NONNULL_BEGIN
     powerRefreshInterval:(NSTimeInterval)powerRefreshInterval
               completion:(nullable void (^)(BOOL success, NSError* _Nullable err))completion
     __attribute__((objc_method_family(none)));
+- (void)init:(int)packageCount
+    powerRefreshInterval:(NSTimeInterval)powerRefreshInterval
+              completion:(nullable void (^)(BOOL success, NSError* _Nullable err))completion
+    __attribute__((objc_method_family(none)));
 - (void)startDataNotification:(NSTimeInterval)timeout
                    completion:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
+- (void)startDataNotificationWithCompletion:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
 - (void)stopDataNotification:(NSTimeInterval)timeout
                   completion:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
+- (void)stopDataNotificationWithCompletion:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
 
 - (void)getBatteryLevel:(NSTimeInterval)timeout
              completion:(void (^)(int battery, NSError* _Nullable err))completion;
+- (void)getBatteryLevelWithCompletion:(void (^)(int battery, NSError* _Nullable err))completion;
 - (void)fetchDeviceInfo:(NSTimeInterval)timeout
              completion:(void (^)(DeviceInfo* _Nullable deviceInfo, NSError* _Nullable err))completion;
+- (void)fetchDeviceInfoWithCompletion:(void (^)(DeviceInfo* _Nullable deviceInfo, NSError* _Nullable err))completion;
 
 - (void)setParam:(NSTimeInterval)timeout key:(NSString*)key value:(NSString*)value
       completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
+- (void)setParamWithKey:(NSString*)key value:(NSString*)value
+             completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
 - (void)getParam:(NSTimeInterval)timeout key:(NSString*)key
       completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
+- (void)getParamWithKey:(NSString*)key
+             completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
 
 - (void)setAutoReconnect:(bool)enabled;
 

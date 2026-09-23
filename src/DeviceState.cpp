@@ -84,7 +84,6 @@ DeviceState::DeviceState(sensor::SensorProfile* p)
         name = QString::fromStdString(dev.name);
         mac = QString::fromStdString(dev.mac);
     }
-    rateWindowStartMs = QDateTime::currentMSecsSinceEpoch();
 }
 
 void DeviceState::appendData(const sensor::SensorDataView& data) {
@@ -105,7 +104,7 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
                 }
             }
             if (valid > 0) {
-                rateCounts[data.getDataType()] = rateCounts.value(data.getDataType(), 0) + valid;
+                noteRateSamples(data.getDataType(), data.getStartTimeStamp(), valid);
             }
         }
         if (data.getSampleRate() > 0) {
@@ -114,9 +113,10 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
         if (data.getChannelCount() > 0) {
             nominalChannels[data.getDataType()] = data.getChannelCount();
         }
-        // Stream-start wall clock + first-packet delay for the status bar.
+        // Stream-start wall clock per data type + first-packet delay for the
+        // status bar.
         if (data.getStartTimeSec() > 0) {
-            streamStartTimeSec = data.getStartTimeSec();
+            streamStartTimeSecs[data.getDataType()] = data.getStartTimeSec();
         }
         if (data.getDelay() > 0) {
             streamDelayMs = data.getDelay();
@@ -186,6 +186,10 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
     case sensor::SensorData::NTF_BRTH:
         target = &brth;
         impedance = &brthImpedance;
+        seconds = BIO_BUFFER_SECONDS;
+        break;
+    case sensor::SensorData::NTF_MAG_ANGLE:
+        target = &magAngle;
         seconds = BIO_BUFFER_SECONDS;
         break;
     default:
@@ -258,12 +262,15 @@ void DeviceState::appendImuSegments(const sensor::SensorDataView& data) {
                 }
             }
             if (valid > 0) {
-                rateCounts[seg.type] = rateCounts.value(seg.type, 0) + valid;
+                noteRateSamples(seg.type, data.getStartTimeStamp(), valid);
             }
             if (data.getSampleRate() > 0) {
                 nominalRates[seg.type] = data.getSampleRate();
             }
             nominalChannels[seg.type] = seg.count;
+            if (data.getStartTimeSec() > 0) {
+                streamStartTimeSecs[seg.type] = data.getStartTimeSec();
+            }
         }
 
         RingBuffer* target = nullptr;
@@ -324,6 +331,7 @@ void DeviceState::clearBuffers() {
     eeg.clear();
     ecg.clear();
     brth.clear();
+    magAngle.clear();
     ppg.clear();
     spo2.clear();
     quat.clear();
@@ -344,25 +352,42 @@ DeviceState::BioKind DeviceState::bioKind() const {
     if (info.EEGChannelCount > 0 || eeg.allocated) {
         return BioKind::EEG;
     }
-    if (info.EMGChannelCount > 0 || emg.allocated) {
+    if (info.EMGChannelCount > 0 || info.MagAngleChannelCount > 0
+        || emg.allocated || magAngle.allocated) {
         return BioKind::EMG;
     }
     return BioKind::None;
 }
 
+void DeviceState::noteRateSamples(int type, quint32 sessionTag, qint64 valid) {
+    // Caller holds rateMutex. The accumulation starts at the first packet of
+    // each stream session; a session tag change (stream restart) resets it.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (rateStreamTags.value(type) != sessionTag) {
+        rateStreamTags[type] = sessionTag;
+        rateTotalCounts[type] = 0;
+        rateStreamStartMs[type] = now;
+    }
+    rateTotalCounts[type] += valid;
+    rateLastDataMs = now;
+}
+
 void DeviceState::updateActualRates() {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QMutexLocker lock(&rateMutex);
-    const double elapsed = (now - rateWindowStartMs) / 1000.0;
-    if (elapsed <= 0.0) {
+    if (rateLastDataMs > 0 && now - rateLastDataMs > 2000) {
+        actualRates.clear();
+        rateTotalCounts.clear();
+        rateStreamStartMs.clear();
+        rateStreamTags.clear();
+        rateLastDataMs = 0;
         return;
     }
     actualRates.clear();
-    for (auto it = rateCounts.constBegin(); it != rateCounts.constEnd(); ++it) {
-        actualRates[it.key()] = it.value() / elapsed;
+    for (auto it = rateTotalCounts.constBegin(); it != rateTotalCounts.constEnd(); ++it) {
+        const double elapsed = (now - rateStreamStartMs.value(it.key(), now)) / 1000.0;
+        actualRates[it.key()] = it.value() / qMax(elapsed, 0.001);
     }
-    rateCounts.clear();
-    rateWindowStartMs = now;
 }
 
 QString DeviceState::buildStatusText() const {
@@ -387,6 +412,7 @@ QString DeviceState::buildStatusText() const {
         {sensor::SensorData::NTF_ECG, QStringLiteral("ECG")},
         {sensor::SensorData::NTF_BRTH, QStringLiteral("BRTH")},
         {sensor::SensorData::NTF_GEST, QStringLiteral("GEST")},
+        {sensor::SensorData::NTF_MAG_ANGLE, QStringLiteral("Angle")},
     };
     QStringList parts{head};
     for (const auto& entry : order) {
@@ -419,6 +445,7 @@ QString DeviceState::buildRateText() const {
         {sensor::SensorData::NTF_ECG, QStringLiteral("ECG")},
         {sensor::SensorData::NTF_BRTH, QStringLiteral("BRTH")},
         {sensor::SensorData::NTF_GEST, QStringLiteral("GEST")},
+        {sensor::SensorData::NTF_MAG_ANGLE, QStringLiteral("Angle")},
     };
     QStringList entries;
     for (const auto& entry : order) {
@@ -427,17 +454,19 @@ QString DeviceState::buildRateText() const {
         }
         const double actual = actualRates[entry.first];
         const float nominal = nominalRates.value(entry.first, 0);
-        entries.append(QStringLiteral("%1 %2 / %3Hz")
+        QString text = QStringLiteral("%1 %2 / %3Hz")
                            .arg(entry.second)
                            .arg(actual, 0, 'f', 1)
-                           .arg(nominal > 0 ? QString::number(nominal) : QStringLiteral("--")));
-    }
-    if (streamStartTimeSec > 0) {
-        // Local wall clock with milliseconds.
-        const qint64 startMs = (qint64)(streamStartTimeSec * 1000.0);
-        entries.append(QStringLiteral("start %1")
-                           .arg(QDateTime::fromMSecsSinceEpoch(startMs)
-                                    .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))));
+                           .arg(nominal > 0 ? QString::number(nominal) : QStringLiteral("--"));
+        const double startSec = streamStartTimeSecs.value(entry.first, 0);
+        if (startSec > 0) {
+            // Local wall clock with milliseconds.
+            const qint64 startMs = (qint64)(startSec * 1000.0);
+            text += QStringLiteral(" (start %1)")
+                        .arg(QDateTime::fromMSecsSinceEpoch(startMs)
+                                 .toString(QStringLiteral("HH:mm:ss.zzz")));
+        }
+        entries.append(text);
     }
     if (streamDelayMs > 0) {
         entries.append(QStringLiteral("delay %1ms").arg(streamDelayMs));
@@ -453,12 +482,12 @@ QString sensorTypeName(int type) {
     case sensor::SensorData::NTF_QUATERNION: return QStringLiteral("QUAT");
     case sensor::SensorData::NTF_GEST: return QStringLiteral("GEST");
     case sensor::SensorData::NTF_EMG_RAW_DATA: return QStringLiteral("EMG");
-    case sensor::SensorData::NTF_MAG_ANGLE: return QStringLiteral("MAG");
+    case sensor::SensorData::NTF_MAG_ANGLE: return QStringLiteral("Angle");
     case sensor::SensorData::NTF_EEG: return QStringLiteral("EEG");
     case sensor::SensorData::NTF_PPG: return QStringLiteral("PPG");
     case sensor::SensorData::NTF_SPO2: return QStringLiteral("SPO2");
     case sensor::SensorData::NTF_ECG: return QStringLiteral("ECG");
-    case sensor::SensorData::NTF_IMPEDANCE: return QStringLiteral("IMP");
+    case sensor::SensorData::NTF_IMPEDANCE: return QStringLiteral("IMPE");
     case sensor::SensorData::NTF_IMU: return QStringLiteral("IMU");
     case sensor::SensorData::NTF_ADS: return QStringLiteral("ADS");
     case sensor::SensorData::NTF_BRTH: return QStringLiteral("BRTH");

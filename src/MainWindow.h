@@ -67,6 +67,7 @@ private slots:
     void onFilterToggled();
     void onDebugLogToggled(int state);
     void onBinDataToggled(int state);
+    void onDongleDebugToggled(int state);
     void onAutoReconnectToggled(bool checked);
     void onMultiSyncClicked();
     void onMultiReplayClicked();
@@ -107,6 +108,7 @@ private:
                                     QMap<int, QRadioButton*>* radios,
                                     QButtonGroup** group, const QString& key);
     void applySdkDebugLog();
+    void applyDongleDebug();
 
     // Writes one app event line into the SDK log: with a device state it
     // lands in that device's log, otherwise in the general SDK log.
@@ -226,15 +228,14 @@ private:
     QMap<QString, QString> _lastDataPaths;
     bool _debugLogEnabled = true;
     bool _binDataEnabled = true;
+    bool _dongleDebugEnabled = true;
 
     bool _updatingControls = false;
     bool _shuttingDown = false;
     bool _scanning = false;
 
-    std::thread _analyzeThread;
     std::atomic<bool> _analyzeRunning{false};
     std::thread _replayStartThread;
-    std::thread _dongleCheckThread;
 
     // Data queue: the dataSink only enqueues each batch; the worker thread
     // drains the queue into the DeviceState rings and the plot timer
@@ -312,6 +313,8 @@ private:
     QLabel* _statusLabel = nullptr;
     QLabel* _sdkLabel = nullptr;
     QString _shownBackend;
+    bool _backendQueryPending = false;
+    qint64 _backendQueryMs = 0;
     QLabel* _rateLabel = nullptr;
     QLabel* _modelLabel = nullptr;
     QLabel* _hwLabel = nullptr;
@@ -324,6 +327,7 @@ private:
     class QVBoxLayout* _valueLayout = nullptr;
     QCheckBox* _chkDebugLog = nullptr;
     QCheckBox* _chkBinData = nullptr;
+    QCheckBox* _chkDongleDebug = nullptr;
     QMap<QString, QCheckBox*> _ntfBoxes;
     QMap<QString, QCheckBox*> _filterBoxes;
     // EEG sample-rate radios (rate Hz -> radio).

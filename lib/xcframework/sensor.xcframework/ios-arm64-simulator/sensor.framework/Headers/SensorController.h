@@ -24,6 +24,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (BOOL)startScan:(NSTimeInterval)scanInterval;
 - (BOOL)stopScan;
+- (void)scanOnceWithPeriodMs:(int)periodMs
+                  completion:(nullable void (^)(NSArray<BLEDevice*>* devices))completion;
 
 - (SensorProfile*)requireSensor:(NSString*)deviceMac;
 - (nullable SensorProfile*)getSensor:(NSString*)deviceMac;
@@ -36,15 +38,25 @@ NS_ASSUME_NONNULL_BEGIN
                        maxAttempts:(int)maxAttempts
                         completion:(nullable void (^)(NSDictionary<NSString*, NSNumber*>* results,
                                                       NSDictionary<NSString*, NSString*>* errors))completion;
+- (void)multiStartDataNotification:(NSArray<SensorProfile*>*)sensors
+                        completion:(nullable void (^)(NSDictionary<NSString*, NSNumber*>* results,
+                                                      NSDictionary<NSString*, NSString*>* errors))completion;
 - (void)multiStopDataNotification:(NSArray<SensorProfile*>*)sensors
                         timeoutMs:(int)timeoutMs
+                       completion:(nullable void (^)(NSDictionary<NSString*, NSNumber*>* results,
+                                                     NSDictionary<NSString*, NSString*>* errors))completion;
+- (void)multiStopDataNotification:(NSArray<SensorProfile*>*)sensors
                        completion:(nullable void (^)(NSDictionary<NSString*, NSNumber*>* results,
                                                      NSDictionary<NSString*, NSString*>* errors))completion;
 
 - (NSString*)getVersion;
 
-- (NSString*)getParam:(NSString*)key;
-- (NSString*)setParam:(NSString*)key value:(NSString*)value;
+- (void)getParam:(NSString*)key
+      completion:(nullable void (^)(NSString* result, NSError* _Nullable err))completion;
+- (void)setParam:(NSString*)key value:(NSString*)value
+      completion:(nullable void (^)(NSString* result, NSError* _Nullable err))completion;
+
+- (void)checkSetupDongle:(nullable void (^)(NSString* result, NSError* _Nullable err))completion;
 
 - (void)log:(nullable NSString*)message level:(nullable NSString*)level;
 - (void)log:(nullable NSString*)message;
@@ -52,13 +64,19 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable BinFileInfo*)getBinFileInfo:(NSString*)path;
 - (nullable SensorProfile*)replayBinFile:(NSString*)path deviceMac:(NSString*)deviceMac
                                 realtime:(BOOL)realtime timeout:(NSTimeInterval)timeout;
+- (nullable SensorProfile*)replayBinFile:(NSString*)path deviceMac:(NSString*)deviceMac
+                                realtime:(BOOL)realtime;
 - (NSArray*)multiReplayBinFile:(NSArray<NSString*>*)paths
-                    deviceMacs:(NSArray<NSString*>*)macs
+                       sensors:(NSArray<SensorProfile*>*)sensors
                       realtime:(BOOL)realtime timeout:(NSTimeInterval)timeout;
+- (NSArray*)multiReplayBinFile:(NSArray<NSString*>*)paths
+                       sensors:(NSArray<SensorProfile*>*)sensors
+                      realtime:(BOOL)realtime;
 - (NSString*)pauseBinReplay:(NSString*)deviceMac;
 - (NSString*)resumeBinReplay:(NSString*)deviceMac;
 - (NSString*)stopBinReplay:(NSString*)deviceMac;
-- (NSString*)parseBinToCsv:(NSString*)binPath csvPath:(NSString*)csvPath;
+- (void)parseBinToCsv:(NSString*)binPath csvPath:(NSString*)csvPath
+           completion:(nullable void (^)(NSString* result, NSError* _Nullable err))completion;
 @end
 
 NS_ASSUME_NONNULL_END
