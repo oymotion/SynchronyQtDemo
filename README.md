@@ -444,13 +444,21 @@ A post-build step copies `libsensor.dylib` next to the executable, and the
 binary finds it through `@executable_path` (the dylib's install name is
 `@rpath/libsensor.dylib`), so the folder is self-contained.
 
-Linux (set `QT_LINUX_KIT` to the Qt 6 kit, e.g. `~/Qt/6.10.2/gcc_64`; add
-`-DSENSOR_SDK_LINUX_ARCH=x86` for a 32-bit build with a 32-bit Qt kit, or
-`-DSENSOR_SDK_LINUX_ARCH=arm64` on an ARM64 machine with an ARM64 Qt kit):
+Linux (set `QT_LINUX_KIT` to the Qt 6 kit, e.g. `~/Qt/6.10.2/gcc_64` — or
+`/usr` when using the distro Qt 6 packages; add `-DSENSOR_SDK_LINUX_ARCH=x86`
+for a 32-bit build with a 32-bit Qt kit):
 
 ```
 cmake --preset qt-demo-linux
 cmake --build --preset qt-demo-linux              # -> build_linux/DemoEMG
+```
+
+On an ARM64 machine with an ARM64 Qt kit, use the dedicated preset (equivalent
+to `-DSENSOR_SDK_LINUX_ARCH=arm64` on the x86_64 one):
+
+```
+cmake --preset qt-demo-linux-arm64
+cmake --build --preset qt-demo-linux-arm64        # -> build_linux_arm64/DemoEMG
 ```
 
 The Linux preset was NOT compile-verified on the dev machine (Windows-only).
