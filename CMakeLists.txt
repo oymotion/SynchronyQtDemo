@@ -30,7 +30,7 @@ endif()
 # The package layout:
 #   include/                                  public SDK headers
 #   lib/windows/<x64|x86>/Release/            sensor.dll/.lib (x86: sensor32.*)
-#   lib/linux/<x86_64|x86|arm64>/libsensor.so
+#   lib/linux/<x86_64|x86|arm64|arm>/libsensor.so
 #   lib/android/<abi>/libsensor.so            arm64-v8a, armeabi-v7a, x86, x86_64
 #   lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator
 #   lib/macos/libsensor.dylib                 macOS (universal, @rpath)
@@ -55,8 +55,8 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SENSOR_SDK_LINUX_ARCH "x86_64" CACHE STRING
-        "Prebuilt SDK library on Linux: x86_64, x86 or arm64")
-    set_property(CACHE SENSOR_SDK_LINUX_ARCH PROPERTY STRINGS x86_64 x86 arm64)
+        "Prebuilt SDK library on Linux: x86_64, x86, arm64 or arm (32-bit armhf)")
+    set_property(CACHE SENSOR_SDK_LINUX_ARCH PROPERTY STRINGS x86_64 x86 arm64 arm)
 endif()
 
 if(APPLE)
