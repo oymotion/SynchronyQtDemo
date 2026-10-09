@@ -175,7 +175,7 @@ profile->setAutoReconnect(true);   // default on in the demos; false to opt out
 While enabled and the device is streaming, an abnormal disconnect is followed
 by automatic reconnect -> `init()` with the previous arguments -> re-applying
 the previous `setParam` values -> `startData()`. Explicit user
-calls (`connect()`, `disconnect()`, `stopData()`) cancel a
+calls (`connect()`, `disconnect()`, `setAutoReconnect(false)`) cancel a
 pending resume.
 
 To customize recovery, set the `onAutoReconnect(profile, hasLastSession,
@@ -285,8 +285,11 @@ profile->getBatteryLevel(5000, [](int level, const std::string& errorMsg) {
 ### 14. setParam / getParam
 
 `setParam(timeoutMs, key, value, cb)` configures the profile after `Ready` +
-`init`. The callback result is `"OK"` on success or a string starting with
-`"Error"`. Changing an `NTF_*` key while streaming restarts the data
+`init`. The callback result is `"OK"` on success or an error string
+otherwise: guard failures (not connected, not initialized, ...) arrive as
+`"Error: ..."`, while a command that the device rejected reports an
+all-caps `"ERROR: ..."` (e.g. `"ERROR: restart stream fail"`). Changing an
+`NTF_*` key while streaming restarts the data
 notification so the setting takes effect; `FILTER_*` keys are applied on the
 fly without interrupting the stream.
 
@@ -369,7 +372,8 @@ Every session's raw BLE capture can be exported as a `.bin` file (see
 auto info = controller.getBinFileInfo(path);   // BinFileInfo: mac, deviceName,
                                                // durationSec, deviceInfo, valid
 
-// Replay (refused while the target profile is streaming live data); the
+// Replay (refused while the target device is connected or ready — not only
+// while streaming); the
 // target profile comes from requireSensor — the bin's info.mac works even
 // for a device that was never scanned
 sensor::SensorProfile* replay = controller.replayBinFile(
