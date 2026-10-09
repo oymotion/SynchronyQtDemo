@@ -23,6 +23,7 @@ lib/windows/x86/Release/                  sensor32.dll + sensor32.lib (32-bit)
 lib/linux/x86_64/libsensor.so
 lib/linux/x86/libsensor.so                (32-bit)
 lib/linux/arm64/libsensor.so              (ARM64)
+lib/linux/arm/libsensor.so                (32-bit ARM, armhf)
 lib/android/<abi>/libsensor.so            arm64-v8a, armeabi-v7a, x86, x86_64
 lib/xcframework/sensor.xcframework        ios-arm64, ios-simulator (static)
 lib/macos/libsensor.dylib                 macOS (universal)
@@ -35,7 +36,7 @@ each choice has a configure-time option to override it:
 |---|---|---|
 | `SENSOR_SDK_ROOT` | all | package root containing `include/` + `lib/` |
 | `SENSOR_SDK_WIN_ARCH` | Windows | `x64`, `x86` |
-| `SENSOR_SDK_LINUX_ARCH` | Linux | `x86_64`, `x86`, `arm64` |
+| `SENSOR_SDK_LINUX_ARCH` | Linux | `x86_64`, `x86`, `arm64`, `arm` |
 | `SENSOR_SDK_XCFRAMEWORK` | iOS | path to `sensor.xcframework` |
 | `SENSOR_SDK_MAC_DYLIB` | macOS | path to `libsensor.dylib` |
 | — | Android | follows the Qt kit ABI (`CMAKE_ANDROID_ARCH_ABI`) |
@@ -478,7 +479,8 @@ folder is self-contained.
 
 Linux (set `QT_LINUX_KIT` to the Qt 6 kit, e.g. `~/Qt/6.10.2/gcc_64` — or
 `/usr` when using the distro Qt 6 packages; add `-DSENSOR_SDK_LINUX_ARCH=x86`
-for a 32-bit build with a 32-bit Qt kit):
+for a 32-bit build with a 32-bit Qt kit, or `=arm` for 32-bit ARM with an
+armhf Qt kit):
 
 ```
 cmake --preset qt-demo-linux
