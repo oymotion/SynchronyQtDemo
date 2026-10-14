@@ -961,6 +961,10 @@ public:
         sen_profile_set_auto_reconnect(_handle, enabled ? 1 : 0);
     }
 
+    bool getAutoReconnect() const {
+        return sen_profile_get_auto_reconnect(_handle) != 0;
+    }
+
     void log(const std::string& message, const std::string& level = "I") const {
         try {
             sen_profile_log(_handle, message.c_str(), level.c_str());
@@ -1197,6 +1201,14 @@ public:
             return nullptr;
         }
         return wrapProfile(sen_controller_require_sensor(_handle, mac.c_str()));
+    }
+    SensorProfile* requireSensor(const BLEDevice& device) {
+        SensorProfile* profile = requireSensor(device.mac);
+        if (profile != nullptr && !profile->_hasBleDeviceCache) {
+            profile->_bleDeviceCache = device;
+            profile->_hasBleDeviceCache = true;
+        }
+        return profile;
     }
     SensorProfile* getSensor(const std::string& mac) {
         return wrapProfile(sen_controller_get_sensor(_handle, mac.c_str()));
@@ -1464,7 +1476,7 @@ public:
             multiStartDataAsync(profiles, timeoutMs, maxDelayDispersionMs, maxAttempts);
         const int backstopTimeoutMs = timeoutMs > 0 ? timeoutMs : 60000;
         if (fut.wait_for(std::chrono::milliseconds(backstopTimeoutMs) +
-                         std::chrono::seconds(45)) == std::future_status::timeout) {
+                         std::chrono::seconds(10)) == std::future_status::timeout) {
             return MultiResultMap();
         }
         return fut.get();
@@ -1483,7 +1495,7 @@ public:
         detail::throwOnSdkThread();
         std::future<MultiResultMap> fut = multiStopDataAsync(profiles, timeoutMs);
         if (fut.wait_for(std::chrono::milliseconds(timeoutMs) +
-                         std::chrono::seconds(45)) == std::future_status::timeout) {
+                         std::chrono::seconds(10)) == std::future_status::timeout) {
             return MultiResultMap();
         }
         return fut.get();

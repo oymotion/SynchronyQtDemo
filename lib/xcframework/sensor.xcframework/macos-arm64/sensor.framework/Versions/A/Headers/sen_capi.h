@@ -25,7 +25,7 @@ extern "C" {
   #define SEN_ALIGN8 _Alignas(8)
 #endif
 
-#define SEN_CAPI_VERSION 20
+#define SEN_CAPI_VERSION 21
 
 typedef struct sen_controller sen_controller_t;
 typedef struct sen_profile sen_profile_t;
@@ -335,6 +335,7 @@ SEN_API void sen_profile_get_param(sen_profile_t* profile, int timeoutMs,
                                          const char* key, sen_param_cb cb, void* ctx);
 
 SEN_API void sen_profile_set_auto_reconnect(sen_profile_t* profile, int enabled);
+SEN_API int sen_profile_get_auto_reconnect(sen_profile_t* profile);
 
 SEN_API void sen_profile_log(sen_profile_t* profile, const char* message, const char* level);
 

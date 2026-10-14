@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (atomic, assign, readonly) bool hasInited;
 @property (atomic, assign, readonly) bool isDataTransfering;
 @property (atomic, assign, readonly) int cachedPower;
+@property (nonatomic) BOOL autoReconnect;
 
 - (void)connect:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
 - (void)disconnect:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
@@ -50,8 +51,6 @@ NS_ASSUME_NONNULL_BEGIN
       completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
 - (void)getParamWithKey:(NSString*)key
              completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
-
-- (void)setAutoReconnect:(bool)enabled;
 
 - (void)log:(nullable NSString*)message level:(nullable NSString*)level;
 - (void)log:(nullable NSString*)message;

@@ -28,6 +28,7 @@ NS_ASSUME_NONNULL_BEGIN
                   completion:(nullable void (^)(NSArray<BLEDevice*>* devices))completion;
 
 - (SensorProfile*)requireSensor:(NSString*)deviceMac;
+- (SensorProfile*)requireSensorWithDevice:(BLEDevice*)device;
 - (nullable SensorProfile*)getSensor:(NSString*)deviceMac;
 - (NSArray<SensorProfile*>*)getSensors;
 - (NSArray<SensorProfile*>*)getConnectedSensors;

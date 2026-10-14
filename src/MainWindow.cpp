@@ -48,7 +48,7 @@ const int CMD_TIMEOUT_MS = 5000;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.32";
+const char* const DEMO_VERSION = "0.1.34";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
@@ -530,6 +530,10 @@ QWidget* MainWindow::buildSettingsPage() {
     _chkDongleDebug->setChecked(true);
     connect(_chkDongleDebug, &QCheckBox::stateChanged, this, &MainWindow::onDongleDebugToggled);
     debugLayout->addWidget(_chkDongleDebug);
+    _chkTranslateImu = new QCheckBox(QStringLiteral("Translate IMU (split ACC/GYRO/EULER/QUAT)"), page);
+    _chkTranslateImu->setChecked(true);
+    connect(_chkTranslateImu, &QCheckBox::stateChanged, this, &MainWindow::onTranslateImuToggled);
+    debugLayout->addWidget(_chkTranslateImu);
 
     auto* ntfGroup = new QGroupBox(QStringLiteral("Data Notification"), page);
     auto* ntfLayout = new QHBoxLayout(ntfGroup);
@@ -1783,6 +1787,18 @@ void MainWindow::onDongleDebugToggled(int state) {
     applyDongleDebug();
 }
 
+void MainWindow::onTranslateImuToggled(int state) {
+    const QString value = state == Qt::Checked ? QStringLiteral("True") : QStringLiteral("False");
+    appLog(QStringLiteral("User: translate IMU %1").arg(value));
+    _controller->setParam("TRANSLATE_IMU", value.toStdString(),
+                          [this, value](const std::string& result, const std::string&) {
+                              postToGui([this, value, result]() {
+                                  appLog(QStringLiteral("App: setParam(TRANSLATE_IMU, %1) -> %2")
+                                             .arg(value, QString::fromStdString(result)));
+                              });
+                          });
+}
+
 void MainWindow::onAutoReconnectToggled(bool checked) {
     appLog(QStringLiteral("User: auto reconnect %1")
                .arg(checked ? QStringLiteral("ON") : QStringLiteral("OFF")));
@@ -2373,6 +2389,7 @@ void MainWindow::setReplayModeUi(bool replaying) {
     _chkDebugLog->setEnabled(!replaying);
     _chkBinData->setEnabled(!replaying);
     _chkDongleDebug->setEnabled(!replaying);
+    _chkTranslateImu->setEnabled(!replaying);
     _btnReplay->setEnabled(!replaying);
     _btnMultiReplay->setEnabled(!replaying);
     _btnReplayPause->setEnabled(replaying);

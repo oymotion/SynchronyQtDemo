@@ -68,6 +68,7 @@ private slots:
     void onDebugLogToggled(int state);
     void onBinDataToggled(int state);
     void onDongleDebugToggled(int state);
+    void onTranslateImuToggled(int state);
     void onAutoReconnectToggled(bool checked);
     void onMultiSyncClicked();
     void onMultiReplayClicked();
@@ -328,6 +329,7 @@ private:
     QCheckBox* _chkDebugLog = nullptr;
     QCheckBox* _chkBinData = nullptr;
     QCheckBox* _chkDongleDebug = nullptr;
+    QCheckBox* _chkTranslateImu = nullptr;
     QMap<QString, QCheckBox*> _ntfBoxes;
     QMap<QString, QCheckBox*> _filterBoxes;
     // EEG sample-rate radios (rate Hz -> radio).
