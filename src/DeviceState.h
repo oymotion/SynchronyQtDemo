@@ -43,6 +43,7 @@ public:
     QString mac;
     bool isReplay = false;
     bool flowStarted = false;           // connect -> init -> start chain issued
+    bool autoRecovery = false;
 
     sensor::DeviceInfo info{};
     bool hasInfo = false;
@@ -51,11 +52,12 @@ public:
     QMutex bufMutex;                    // guards the ring buffers + impedance
     RingBuffer acc;
     RingBuffer gyro;
+    RingBuffer mag;
     RingBuffer emg;
     RingBuffer eeg;
     RingBuffer ecg;
     RingBuffer brth;
-    RingBuffer magAngle;
+    RingBuffer angle;
     RingBuffer ppg;
     RingBuffer spo2;
     RingBuffer quat;
