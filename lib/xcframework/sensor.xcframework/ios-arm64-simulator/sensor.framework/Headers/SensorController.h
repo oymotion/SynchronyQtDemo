@@ -53,7 +53,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSString*)getVersion;
 
 - (void)getParam:(NSString*)key
-      completion:(nullable void (^)(NSString* result, NSError* _Nullable err))completion;
+      completion:(nullable void (^)(NSString* result, NSError* _Nullable err))completion
+      NS_SWIFT_ASYNC_NAME(getParam(_:));
 - (void)setParam:(NSString*)key value:(NSString*)value
       completion:(nullable void (^)(NSString* result, NSError* _Nullable err))completion;
 

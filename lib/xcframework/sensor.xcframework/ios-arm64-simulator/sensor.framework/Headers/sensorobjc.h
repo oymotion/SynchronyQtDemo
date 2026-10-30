@@ -2,3 +2,4 @@
 #import "SensorData.h"
 #import "SensorProfile.h"
 #import "SensorController.h"
+#import "SensorAlgo.h"

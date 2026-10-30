@@ -37,8 +37,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)stopDataNotificationWithCompletion:(nullable void (^)(BOOL success, NSError* _Nullable err))completion;
 
 - (void)getBatteryLevel:(NSTimeInterval)timeout
-             completion:(void (^)(int battery, NSError* _Nullable err))completion;
-- (void)getBatteryLevelWithCompletion:(void (^)(int battery, NSError* _Nullable err))completion;
+             completion:(void (^)(int battery, NSError* _Nullable err))completion
+             NS_SWIFT_ASYNC_NAME(getBatteryLevel(_:));
+- (void)getBatteryLevelWithCompletion:(void (^)(int battery, NSError* _Nullable err))completion
+             NS_SWIFT_ASYNC_NAME(getBatteryLevel());
 - (void)fetchDeviceInfo:(NSTimeInterval)timeout
              completion:(void (^)(DeviceInfo* _Nullable deviceInfo, NSError* _Nullable err))completion;
 - (void)fetchDeviceInfoWithCompletion:(void (^)(DeviceInfo* _Nullable deviceInfo, NSError* _Nullable err))completion;
@@ -48,9 +50,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setParamWithKey:(NSString*)key value:(NSString*)value
              completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
 - (void)getParam:(NSTimeInterval)timeout key:(NSString*)key
-      completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
+      completion:(void (^)(NSString* result, NSError* _Nullable err))completion
+      NS_SWIFT_ASYNC_NAME(getParam(_:key:));
 - (void)getParamWithKey:(NSString*)key
-             completion:(void (^)(NSString* result, NSError* _Nullable err))completion;
+             completion:(void (^)(NSString* result, NSError* _Nullable err))completion
+             NS_SWIFT_ASYNC_NAME(getParam(key:));
 
 - (void)log:(nullable NSString*)message level:(nullable NSString*)level;
 - (void)log:(nullable NSString*)message;

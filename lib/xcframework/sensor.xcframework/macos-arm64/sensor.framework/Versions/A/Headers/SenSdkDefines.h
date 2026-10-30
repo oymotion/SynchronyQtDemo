@@ -14,11 +14,12 @@ typedef NS_ENUM(NSInteger, BLEState) {
 typedef NS_ENUM(NSInteger, NotifyDataType) {
     NTF_ACC = 1,
     NTF_GYRO = 2,
+    NTF_MAG = 3,
     NTF_EULER = 4,
     NTF_QUATERNION = 5,
     NTF_GEST = 7,
     NTF_EMG = 8,
-    NTF_MAG_ANGLE = 13,
+    NTF_ANGLE = 13,
     NTF_EEG = 16,
     NTF_ECG = 17,
     NTF_IMPEDANCE = 18,

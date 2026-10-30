@@ -40,7 +40,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (atomic, assign) int Spo2ChannelCount;
 @property (atomic, assign) int QuatChannelCount;
 @property (atomic, assign) int EulerChannelCount;
-@property (atomic, assign) int MagAngleChannelCount;
+@property (atomic, assign) int AngleChannelCount;
 @property (atomic, assign) int ImpeChannelCount;
 @property (atomic, assign) int EmgChannelCount;
 @property (atomic, assign) int ImuChannelCount;
@@ -52,7 +52,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (atomic, assign) float GyroSampleRate;
 @property (atomic, assign) float QuatSampleRate;
 @property (atomic, assign) float EulerSampleRate;
-@property (atomic, assign) float MagAngleSampleRate;
+@property (atomic, assign) float AngleSampleRate;
 @property (atomic, assign) float PpgSampleRate;
 @property (atomic, assign) float Spo2SampleRate;
 @property (atomic, assign) float ImpeSampleRate;
@@ -66,6 +66,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (atomic, strong, nullable) NSString* backend;
 @property (atomic, assign) int GestChannelCount;
 @property (atomic, assign) float GestSampleRate;
+@property (atomic, assign) int MagChannelCount;
+@property (atomic, assign) float MagSampleRate;
 @end
 
 @interface BinSensorDataConfig : NSObject
