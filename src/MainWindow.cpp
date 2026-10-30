@@ -48,7 +48,7 @@ const int CMD_TIMEOUT_MS = 5000;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.34";
+const char* const DEMO_VERSION = "0.1.60";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
@@ -58,7 +58,7 @@ const unsigned int REPLAY_DELEGATE_TIMEOUT_MS = 5000;
 const int MULTI_STOP_TIMEOUT_MS = 10000;
 
 // Data Notification keys.
-const char* const kNtfKeys[] = {"NTF_EEG", "NTF_IMPEDANCE", "NTF_EMG", "NTF_GEST", "NTF_PPG", "NTF_SPO2", "NTF_IMU", "NTF_MAG_ANGLE"};
+const char* const kNtfKeys[] = {"NTF_EEG", "NTF_IMPEDANCE", "NTF_EMG", "NTF_GEST", "NTF_PPG", "NTF_SPO2", "NTF_IMU", "NTF_ANGLE"};
 const char* const kFilterKeys[] = {"FILTER_50HZ", "FILTER_60HZ", "FILTER_HPF", "FILTER_LPF"};
 // EEG Sample Rate radio candidates.
 const QVector<int> kSampleRateCandidates = {250, 500, 1000, 2000};
@@ -67,18 +67,16 @@ const QVector<int> kEmgSampleRateCandidates = {500, 1000};
 const QVector<int> kImuSampleRateCandidates = {50, 100, 200, 250, 400, 500, 1000, 2000};
 const QVector<int> kPpgSampleRateCandidates = {50, 100, 200, 400, 800, 1000, 1600, 3200};
 
-// Parses a "|"-separated sample-rate candidate list answer (empty on error /
+// Parses a "|"-separated sample-rate candidate list answer (empty when
 // unsupported).
 QVector<int> parseRateOptions(const QString& listResult) {
     QVector<int> options;
-    if (!listResult.startsWith(QStringLiteral("Error"))) {
-        const QStringList items = listResult.split(QLatin1Char('|'), Qt::SkipEmptyParts);
-        for (const QString& item : items) {
-            bool ok = false;
-            const int rate = item.toInt(&ok);
-            if (ok) {
-                options.append(rate);
-            }
+    const QStringList items = listResult.split(QLatin1Char('|'), Qt::SkipEmptyParts);
+    for (const QString& item : items) {
+        bool ok = false;
+        const int rate = item.toInt(&ok);
+        if (ok) {
+            options.append(rate);
         }
     }
     return options;
@@ -86,14 +84,9 @@ QVector<int> parseRateOptions(const QString& listResult) {
 
 // Parses a current-rate answer (0 on error).
 int parseRateCurrent(const QString& rateResult) {
-    if (!rateResult.startsWith(QStringLiteral("Error"))) {
-        bool ok = false;
-        const int rate = rateResult.toInt(&ok);
-        if (ok) {
-            return rate;
-        }
-    }
-    return 0;
+    bool ok = false;
+    const int rate = rateResult.toInt(&ok);
+    return ok ? rate : 0;
 }
 
 // Device-info row texts.
@@ -127,6 +120,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     _controller = std::make_unique<sensor::SensorController>();
     _bridge = std::make_shared<SdkBridge>();
     _controller->setCallbacks(_bridge->controllerCallbacks());
+    sendControllerSetParam(QStringLiteral("TRANSLATE_IMU"), QStringLiteral("False"));
 
     setupUi();
 
@@ -149,9 +143,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // Data path: the sink only enqueues; the worker thread drains the queue
     // into the DeviceState rings and the plot timer refreshes the UI.
-    _bridge->dataSink = [this](const std::string& mac, QSharedPointer<sensor::SensorData> owned,
-                               sensor::SensorDataView borrowed) {
-        enqueueData(mac, std::move(owned), borrowed);
+    _bridge->dataSink = [this](const std::string& mac, QVector<QSharedPointer<sensor::SensorData>> owned,
+                               std::vector<sensor::SensorDataView> borrowed) {
+        enqueueData(mac, std::move(owned), std::move(borrowed));
     };
     _dataWorker = std::thread([this] { drainDataQueue(); });
 
@@ -248,7 +242,9 @@ QWidget* MainWindow::buildDevicePage() {
     // Unchecked (default): zero-copy.
     _chkCloneData->setChecked(false);
     connect(_chkCloneData, &QCheckBox::toggled, this,
-            [this](bool checked) { _bridge->setCloneData(checked); });
+            [this](bool checked) {
+                _bridge->setCloneData(checked);
+            });
     devHeader->addWidget(_chkCloneData);
     devHeader->addStretch();
     _btnMultiSync = new QPushButton(QStringLiteral("Multi Start"), page);
@@ -407,7 +403,7 @@ QWidget* MainWindow::buildWaveformPage() {
 #endif
     layout->addWidget(_cube, 1);
 
-    layout->addWidget(new QLabel(QStringLiteral("2D Waveform + FFT Spectrum (ACC/GYRO/Quat/Euler)"), page));
+    layout->addWidget(new QLabel(QStringLiteral("2D Waveform + FFT Spectrum (ACC/GYRO/Quat/Euler/MAG)"), page));
     _wave2d = new WaveformWidget(page);
     _wave2d->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     layout->addWidget(_wave2d, 3);
@@ -423,6 +419,7 @@ QWidget* MainWindow::buildWaveformPage() {
     _typeCombo->addItem(QStringLiteral("Gyroscope (GYRO)"));
     _typeCombo->addItem(QStringLiteral("Quaternion (Quat)"));
     _typeCombo->addItem(QStringLiteral("Euler Angle (Euler)"));
+    _typeCombo->addItem(QStringLiteral("Magnetometer (MAG)"));
     connect(_typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onTypeChanged);
     typeLayout->addWidget(_typeCombo, 1);
@@ -531,7 +528,7 @@ QWidget* MainWindow::buildSettingsPage() {
     connect(_chkDongleDebug, &QCheckBox::stateChanged, this, &MainWindow::onDongleDebugToggled);
     debugLayout->addWidget(_chkDongleDebug);
     _chkTranslateImu = new QCheckBox(QStringLiteral("Translate IMU (split ACC/GYRO/EULER/QUAT)"), page);
-    _chkTranslateImu->setChecked(true);
+    _chkTranslateImu->setChecked(false);
     connect(_chkTranslateImu, &QCheckBox::stateChanged, this, &MainWindow::onTranslateImuToggled);
     debugLayout->addWidget(_chkTranslateImu);
 
@@ -545,7 +542,7 @@ QWidget* MainWindow::buildSettingsPage() {
         {QStringLiteral("NTF_PPG"), QStringLiteral("PPG")},
         {QStringLiteral("NTF_SPO2"), QStringLiteral("SpO2")},
         {QStringLiteral("NTF_IMU"), QStringLiteral("IMU")},
-        {QStringLiteral("NTF_MAG_ANGLE"), QStringLiteral("Angle")},
+        {QStringLiteral("NTF_ANGLE"), QStringLiteral("Angle")},
     };
     for (const char* key : kNtfKeys) {
         auto* cb = new QCheckBox(ntfLabels.value(QString::fromLatin1(key)), page);
@@ -869,6 +866,7 @@ void MainWindow::onConnectClicked() {
     profile->setAutoReconnect(_chkAutoReconnect->isChecked());
 
     auto st = std::make_shared<DeviceState>(profile);
+    st->autoRecovery = false;
     // A band selected before this device appeared still applies to it.
     st->liveFilter.setBand(_filterCombo->currentIndex());
     st->name = name;
@@ -936,9 +934,25 @@ void MainWindow::onDisconnectClicked() {
     // Teardown finishes in onStateChanged(Disconnected).
 }
 
+bool MainWindow::autoRecoveryCancelled(const std::shared_ptr<DeviceState>& st) {
+    if (!st || !st->autoRecovery) {
+        return false;
+    }
+    if (_chkAutoReconnect->isChecked() && st->profile && st->profile->getAutoReconnect()) {
+        return false;
+    }
+    if (st->profile) {
+        st->profile->setAutoReconnect(false);
+    }
+    st->autoRecovery = false;
+    _restoreParamsMacs.remove(st->mac);
+    updateButtonStates();
+    return true;
+}
+
 void MainWindow::onProfileReady(const QString& mac) {
     auto st = stateFor(mac);
-    if (!st) {
+    if (!st || autoRecoveryCancelled(st)) {
         return;
     }
     if (!st->profile->hasInit()) {
@@ -956,7 +970,7 @@ void MainWindow::onProfileReady(const QString& mac) {
 
 void MainWindow::continueAfterInit(const QString& mac, bool ok, const QString& err) {
     auto st = stateFor(mac);
-    if (!st) {
+    if (!st || autoRecoveryCancelled(st)) {
         return;
     }
     if (!ok) {
@@ -976,7 +990,7 @@ void MainWindow::continueAfterInit(const QString& mac, bool ok, const QString& e
 void MainWindow::continueAfterInfo(const QString& mac, const sensor::DeviceInfo& info,
                                    const QString& err) {
     auto st = stateFor(mac);
-    if (!st) {
+    if (!st || autoRecoveryCancelled(st)) {
         return;
     }
     if (err.isEmpty()) {
@@ -987,11 +1001,11 @@ void MainWindow::continueAfterInfo(const QString& mac, const sensor::DeviceInfo&
     }
     if (!st->profile->hasStartDataNotification()) {
         st->profile->startData(CMD_TIMEOUT_MS,
-                               [this, mac](bool result, const std::string& err) {
-                                   postToGui([this, mac, result, err]() {
-                                       continueAfterStart(mac, result, QString::fromStdString(err));
-                                   });
-                               });
+            [this, mac](bool result, const std::string& err) {
+                postToGui([this, mac, result, err]() {
+                    continueAfterStart(mac, result, QString::fromStdString(err));
+                });
+            });
     } else {
         continueAfterStart(mac, true, QString());
     }
@@ -999,7 +1013,7 @@ void MainWindow::continueAfterInfo(const QString& mac, const sensor::DeviceInfo&
 
 void MainWindow::continueAfterStart(const QString& mac, bool ok, const QString& err) {
     auto st = stateFor(mac);
-    if (!st) {
+    if (!st || autoRecoveryCancelled(st)) {
         return;
     }
     if (!ok) {
@@ -1012,12 +1026,13 @@ void MainWindow::continueAfterStart(const QString& mac, bool ok, const QString& 
     updateDeviceItemText(mac, true);
     applySessionParams(st, [this, mac]() {
         auto st = stateFor(mac);
-        if (!st) {
+        if (!st || autoRecoveryCancelled(st)) {
             return;
         }
         if (_restoreParamsMacs.remove(mac)) {
             restoreSavedParams(mac, 0);
         } else {
+            st->autoRecovery = false;
             refreshControlStates(st);
         }
     });
@@ -1045,11 +1060,17 @@ void MainWindow::continueAfterStart(const QString& mac, bool ok, const QString& 
 
 void MainWindow::applySessionParams(const std::shared_ptr<DeviceState>& st,
                                     std::function<void()> done) {
+    if (autoRecoveryCancelled(st)) {
+        return;
+    }
     const QString mac = st->mac;
     // The two setParams run one after another; done fires after the last one
     // completed.
     auto applyBinPath = [this, mac, done]() {
         auto st = stateFor(mac);
+        if (autoRecoveryCancelled(st)) {
+            return;
+        }
         if (!st || !st->profile || !_binDataEnabled) {
             if (done) {
                 done();
@@ -1058,48 +1079,42 @@ void MainWindow::applySessionParams(const std::shared_ptr<DeviceState>& st,
         }
         const QString path = _lastDataPaths.value(mac, QStringLiteral("True"));
         sendSetParam(st->profile, QStringLiteral("DEBUG_BLE_DATA_PATH"), path,
-                     [this, mac, done](QString, bool isError) {
+                     [this, mac, done](QString, QString error) {
+                         auto st = stateFor(mac);
+                         if (autoRecoveryCancelled(st)) {
+                             return;
+                         }
                          if (done) {
                              done();
                          }
-                         if (isError) {
+                         if (!error.isEmpty() || !st) {
                              return;
                          }
-                         auto st = stateFor(mac);
-                         if (!st) {
-                             return;
-                         }
-                         st->profile->getParam(5000, "DEBUG_BLE_DATA_PATH",
-                             [this, mac](const std::string& result, const std::string&) {
-                                 postToGui([this, mac, result]() {
-                                     const QString cur = QString::fromStdString(result);
-                                     if (!cur.isEmpty() && !cur.startsWith(QStringLiteral("Error"))) {
-                                         _lastDataPaths[mac] = cur;
-                                     }
-                                 });
+                         sendGetParam(st->profile, QStringLiteral("DEBUG_BLE_DATA_PATH"),
+                             [this, mac](QString cur, QString error) {
+                                 if (error.isEmpty() && !cur.isEmpty()) {
+                                     _lastDataPaths[mac] = cur;
+                                 }
                              });
                      });
     };
     if (_debugLogEnabled) {
         const QString path = _lastLogPaths.value(mac, QStringLiteral("True"));
         sendSetParam(st->profile, QStringLiteral("DEBUG_LOG_PATH"), path,
-                     [this, mac, applyBinPath](QString, bool isError) {
-                         applyBinPath();
-                         if (isError) {
-                             return;
-                         }
+                     [this, mac, applyBinPath](QString, QString error) {
                          auto st = stateFor(mac);
-                         if (!st) {
+                         if (autoRecoveryCancelled(st)) {
                              return;
                          }
-                         st->profile->getParam(5000, "DEBUG_LOG_PATH",
-                             [this, mac](const std::string& result, const std::string&) {
-                                 postToGui([this, mac, result]() {
-                                     const QString cur = QString::fromStdString(result);
-                                     if (!cur.isEmpty() && !cur.startsWith(QStringLiteral("Error"))) {
-                                         _lastLogPaths[mac] = cur;
-                                     }
-                                 });
+                         applyBinPath();
+                         if (!error.isEmpty() || !st) {
+                             return;
+                         }
+                         sendGetParam(st->profile, QStringLiteral("DEBUG_LOG_PATH"),
+                             [this, mac](QString cur, QString error) {
+                                 if (error.isEmpty() && !cur.isEmpty()) {
+                                     _lastLogPaths[mac] = cur;
+                                 }
                              });
                      });
     } else {
@@ -1108,8 +1123,8 @@ void MainWindow::applySessionParams(const std::shared_ptr<DeviceState>& st,
 }
 
 void MainWindow::recordSavedParam(const QString& mac, const QString& key,
-                                  const QString& value, const QString& result) {
-    if (mac.isEmpty() || result.startsWith(QStringLiteral("Error"))) {
+                                  const QString& value) {
+    if (mac.isEmpty()) {
         return;
     }
     auto& saved = _savedParamsByMac[mac];
@@ -1125,10 +1140,12 @@ void MainWindow::recordSavedParam(const QString& mac, const QString& key,
 void MainWindow::restoreSavedParams(const QString& mac, int index) {
     auto st = stateFor(mac);
     const auto saved = _savedParamsByMac.value(mac);
-    if (!st || !st->profile) {
+    if (!st || !st->profile || autoRecoveryCancelled(st)) {
         return;
     }
     if (index >= saved.size()) {
+        st->autoRecovery = false;
+        _restoreParamsMacs.remove(mac);
         refreshControlStates(st);
         clearUiData();
         return;
@@ -1136,7 +1153,8 @@ void MainWindow::restoreSavedParams(const QString& mac, int index) {
     const QString key = saved[index].first;
     const QString value = saved[index].second;
     sendSetParam(st->profile, key, value,
-                 [this, mac, index, key, value](QString msg, bool) {
+                 [this, mac, index, key, value](QString msg, QString error) {
+                     if (!error.isEmpty()) msg = error;
                      appLog(QStringLiteral("App: restore setParam(%1, %2) -> %3")
                                 .arg(key, value, msg),
                             "I", stateFor(mac));
@@ -1146,15 +1164,15 @@ void MainWindow::restoreSavedParams(const QString& mac, int index) {
 
 // -- SDK bridge events -------------------------------------------------------
 
-void MainWindow::enqueueData(const std::string& mac, QSharedPointer<sensor::SensorData> owned,
-                             sensor::SensorDataView borrowed) {
+void MainWindow::enqueueData(const std::string& mac, QVector<QSharedPointer<sensor::SensorData>> owned,
+                             std::vector<sensor::SensorDataView> borrowed) {
     {
         std::lock_guard<std::mutex> lock(_dataQueueMutex);
         // Cap the backlog: drop the oldest batches when full.
         while (_dataQueue.size() >= 1000) {
             _dataQueue.pop_front();
         }
-        _dataQueue.push_back({QString::fromUtf8(mac.c_str()), std::move(owned), borrowed});
+        _dataQueue.push_back({QString::fromUtf8(mac.c_str()), std::move(owned), std::move(borrowed)});
     }
     _dataQueueCv.notify_one();
 }
@@ -1177,13 +1195,17 @@ void MainWindow::drainDataQueue() {
             if (!st) {
                 continue;
             }
-            if (item.owned) {
-                // Clone mode: owned deep copy.
-                st->appendData(*item.owned);
+            if (!item.owned.isEmpty()) {
+                // Clone mode: owned deep copy batch.
+                for (const auto& data : item.owned) {
+                    st->appendData(*data);
+                }
             }
-            else if (item.borrowed.getSamples() != nullptr) {
-                // Zero-copy mode: the queued view borrows the SDK's buffers.
-                st->appendData(item.borrowed);
+            else if (!item.borrowed.empty()) {
+                // Zero-copy mode: the queued views borrow the SDK's buffers.
+                for (const auto& view : item.borrowed) {
+                    st->appendData(view);
+                }
             }
         }
         pending.clear();
@@ -1242,6 +1264,13 @@ void MainWindow::onStateChanged(QString mac, int state) {
 void MainWindow::onAutoReconnectRequested(QString mac, bool restore) {
     // App-driven recovery: re-select the row and re-drive the connect flow;
     // the recorded setParam history replays after the stream start.
+    auto profile = _controller->getSensor(mac.toStdString());
+    if (!_chkAutoReconnect->isChecked() || !profile || !profile->getAutoReconnect()) {
+        if (profile) {
+            profile->setAutoReconnect(false);
+        }
+        return;
+    }
     for (int i = 0; i < _deviceList->count(); ++i) {
         auto* item = _deviceList->item(i);
         if (item->data(Qt::UserRole).toString() == mac) {
@@ -1250,10 +1279,6 @@ void MainWindow::onAutoReconnectRequested(QString mac, bool restore) {
         }
     }
     if (_deviceStates.contains(mac)) {
-        return;
-    }
-    auto profile = _controller->getSensor(mac.toStdString());
-    if (!profile) {
         return;
     }
     if (restore) {
@@ -1267,6 +1292,7 @@ void MainWindow::onAutoReconnectRequested(QString mac, bool restore) {
         }
     }
     auto st = std::make_shared<DeviceState>(profile);
+    st->autoRecovery = true;
     st->liveFilter.setBand(_filterCombo->currentIndex());
     st->name = name;
     {
@@ -1400,21 +1426,55 @@ void MainWindow::updateReplayItemText(const QString& mac) {
 
 void MainWindow::sendSetParam(sensor::SensorProfile* profile,
                               const QString& key, const QString& value,
-                              std::function<void(QString, bool)> completion) {
+                              std::function<void(QString, QString)> completion) {
     profile->setParam(CMD_TIMEOUT_MS, key.toStdString(), value.toStdString(),
-                      [this, completion](const std::string& result, const std::string& err) {
-                          // Command-outcome failures arrive as all-caps
-                          // "ERROR: ..." in the result slot
-                          const bool isError = result.rfind("Error", 0) == 0
-                                            || result.rfind("ERROR:", 0) == 0;
-                          const QString msg = !err.empty() ? QString::fromStdString(err)
-                                                           : QString::fromStdString(result);
-                          postToGui([this, completion, msg, isError]() {
+                      [this, completion](const std::string& result, const std::string& error) {
+                          postToGui([this, completion, result, error]() {
                               if (completion) {
-                                  completion(msg, isError);
+                                  completion(QString::fromStdString(result),
+                                             QString::fromStdString(error));
                               }
                           });
                       });
+}
+
+void MainWindow::sendGetParam(sensor::SensorProfile* profile, const QString& key,
+                              std::function<void(QString, QString)> completion) {
+    profile->getParam(CMD_TIMEOUT_MS, key.toStdString(),
+                      [this, completion](const std::string& result, const std::string& error) {
+                          postToGui([this, completion, result, error]() {
+                              if (completion) {
+                                  completion(QString::fromStdString(result),
+                                             QString::fromStdString(error));
+                              }
+                          });
+                      });
+}
+
+void MainWindow::sendControllerGetParam(const QString& key,
+                                        std::function<void(QString, QString)> completion) {
+    _controller->getParam(key.toStdString(),
+                          [this, completion](const std::string& result, const std::string& error) {
+                              postToGui([this, completion, result, error]() {
+                                  if (completion) {
+                                      completion(QString::fromStdString(result),
+                                                 QString::fromStdString(error));
+                                  }
+                              });
+                          });
+}
+
+void MainWindow::sendControllerSetParam(const QString& key, const QString& value,
+                                        std::function<void(QString, QString)> completion) {
+    _controller->setParam(key.toStdString(), value.toStdString(),
+                          [this, completion](const std::string& result, const std::string& error) {
+                              postToGui([this, completion, result, error]() {
+                                  if (completion) {
+                                      completion(QString::fromStdString(result),
+                                                 QString::fromStdString(error));
+                                  }
+                              });
+                          });
 }
 
 void MainWindow::onNtfToggled() {
@@ -1433,10 +1493,11 @@ void MainWindow::onNtfToggled() {
     const QString mac = st->mac;
     const QString value = cb->isChecked() ? QStringLiteral("ON") : QStringLiteral("OFF");
     sendSetParam(st->profile, key, value,
-                 [this, mac, key, value](QString msg, bool isError) {
+                 [this, mac, key, value](QString msg, QString error) {
+                     if (!error.isEmpty()) msg = error;
                      appLog(QStringLiteral("User: setParam(%1, %2) -> %3").arg(key, value, msg));
-                     recordSavedParam(mac, key, value, msg);
-                     if (isError) {
+                     if (error.isEmpty()) recordSavedParam(mac, key, value);
+                     if (!error.isEmpty()) {
                          QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                               QStringLiteral("Failed to set %1:\n%2").arg(key, msg));
                          refreshControlStates(currentState());
@@ -1463,10 +1524,11 @@ void MainWindow::onFilterToggled() {
     const QString mac = st->mac;
     const QString value = cb->isChecked() ? QStringLiteral("ON") : QStringLiteral("OFF");
     sendSetParam(st->profile, key, value,
-                 [this, mac, key, value](QString msg, bool isError) {
+                 [this, mac, key, value](QString msg, QString error) {
+                     if (!error.isEmpty()) msg = error;
                      appLog(QStringLiteral("User: setParam(%1, %2) -> %3").arg(key, value, msg));
-                     recordSavedParam(mac, key, value, msg);
-                     if (isError) {
+                     if (error.isEmpty()) recordSavedParam(mac, key, value);
+                     if (!error.isEmpty()) {
                          QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                               QStringLiteral("Failed to set %1:\n%2").arg(key, msg));
                          refreshControlStates(currentState());
@@ -1502,10 +1564,11 @@ void MainWindow::applySampleRate(const QString& key, int rate) {
     const QString mac = st->mac;
     const QString value = QString::number(rate);
     sendSetParam(st->profile, key, value,
-                 [this, mac, key, value](QString msg, bool isError) {
+                 [this, mac, key, value](QString msg, QString error) {
+                     if (!error.isEmpty()) msg = error;
                      appLog(QStringLiteral("User: setParam(%1, %2) -> %3").arg(key, value, msg));
-                     recordSavedParam(mac, key, value, msg);
-                     if (isError) {
+                     if (error.isEmpty()) recordSavedParam(mac, key, value);
+                     if (!error.isEmpty()) {
                          QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                               QStringLiteral("Failed to set %1:\n%2").arg(key, msg));
                          refreshControlStates(currentState());
@@ -1548,12 +1611,12 @@ void MainWindow::refreshControlStatesStep(const QString& mac, const QStringList&
         return;
     }
     const QString key = keys[index];
-    st->profile->getParam(CMD_TIMEOUT_MS, key.toStdString(),
-        [this, mac, keys, index, results, key](const std::string& result, const std::string&) {
-            postToGui([this, mac, keys, index, results, key, result]() {
-                results->insert(key, QString::fromStdString(result));
-                refreshControlStatesStep(mac, keys, index + 1, results);
-            });
+    sendGetParam(st->profile, key,
+        [this, mac, keys, index, results, key](QString result, QString error) {
+            if (error.isEmpty()) {
+                results->insert(key, result);
+            }
+            refreshControlStatesStep(mac, keys, index + 1, results);
         });
 }
 
@@ -1564,7 +1627,7 @@ void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>&
     const int imuCh = st->hasInfo ? qMax<int>(st->info.AccChannelCount, st->info.GyroChannelCount) : 0;
     const int ppgCh = st->hasInfo ? st->info.PpgChannelCount : 0;
     const int spo2Ch = st->hasInfo ? st->info.Spo2ChannelCount : 0;
-    const int magCh = st->hasInfo ? st->info.MagAngleChannelCount : 0;
+    const int angleCh = st->hasInfo ? st->info.AngleChannelCount : 0;
     const int impeCh = st->hasInfo ? st->info.ImpeChannelCount : 0;
     const QMap<QString, int> channelMap = {
         {QStringLiteral("NTF_EEG"), eegCh},
@@ -1575,12 +1638,12 @@ void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>&
         {QStringLiteral("NTF_PPG"), ppgCh},
         {QStringLiteral("NTF_SPO2"), spo2Ch},
         {QStringLiteral("NTF_IMU"), imuCh},
-        {QStringLiteral("NTF_MAG_ANGLE"), magCh},
+        {QStringLiteral("NTF_ANGLE"), angleCh},
     };
 
     const QString ntfResult = results.value(QStringLiteral("NTF"));
     QMap<QString, QPair<bool, bool>> ntf;
-    if (!ntfResult.startsWith(QStringLiteral("Error"))) {
+    if (!ntfResult.isEmpty()) {
         const QStringList items = ntfResult.split(QLatin1Char('|'));
         for (int i = 0; i + 1 < items.size(); i += 2) {
             const QString key = items[i];
@@ -1595,7 +1658,7 @@ void MainWindow::applyRefreshedControlStates(const std::shared_ptr<DeviceState>&
 
     const QString filterResult = results.value(QStringLiteral("FILTER"));
     QMap<QString, QPair<bool, bool>> filters;
-    const bool hasFilter = !filterResult.isEmpty() && !filterResult.startsWith(QStringLiteral("Error"));
+    const bool hasFilter = !filterResult.isEmpty();
     QMap<QString, QString> parsed;
     if (hasFilter) {
         const QStringList items = filterResult.split(QLatin1Char('|'));
@@ -1706,12 +1769,13 @@ void MainWindow::applySdkDebugLog() {
     // all go into a "<timestamp>_<sdk version>" subdir of
     // Documents/sensorsdklog; set the path before enabling debug logging.
     const QString version = QString::fromStdString(_controller->getVersion()).replace('.', '_');
+    const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     const QString dir = QDir::homePath() + QStringLiteral("/Documents/sensorsdklog/")
-                        + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))
-                        + QStringLiteral("_") + version;
-    _controller->setParam("LOG_PATH", dir.toStdString());
-    _controller->setParam("DEBUG_ENABLED", "True");
+                        + timestamp + QStringLiteral("_") + version;
+    sendControllerSetParam(QStringLiteral("LOG_PATH"), dir);
+    sendControllerSetParam(QStringLiteral("DEBUG_ENABLED"), QStringLiteral("True"));
     qInfo("[DemoEMG] LOG_PATH -> %s", qPrintable(dir));
+    QDir().mkpath(dir);
 }
 
 void MainWindow::appLog(const QString& msg, const char* level,
@@ -1731,18 +1795,20 @@ void MainWindow::onDebugLogToggled(int state) {
     if (_debugLogEnabled) {
         applySdkDebugLog();
     } else {
-        _controller->setParam("DEBUG_ENABLED", "False");
+        sendControllerSetParam(QStringLiteral("DEBUG_ENABLED"), QStringLiteral("False"));
     }
     const QString value = _debugLogEnabled ? QStringLiteral("True") : QStringLiteral("False");
     for (const auto& st : _deviceStates) {
         if (st->profile->isReady() && st->profile->hasInit()) {
             sendSetParam(st->profile, QStringLiteral("DEBUG_LOG_PATH"), value,
-                         [this, st, value](QString msg, bool isError) {
+                         [this, st, value](QString msg, QString error) {
+                     if (!error.isEmpty()) msg = error;
                              st->profile->log(QStringLiteral("App: setParam(DEBUG_LOG_PATH, %1) -> %2")
                                                   .arg(value, msg).toStdString());
-                             if (isError) {
+                             if (!error.isEmpty()) {
                                  QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                                       QStringLiteral("Failed to set DEBUG_LOG_PATH:\n%1").arg(msg));
+                                 return;
                              }
                          });
         }
@@ -1757,10 +1823,11 @@ void MainWindow::onBinDataToggled(int state) {
     for (const auto& st : _deviceStates) {
         if (st->profile->isReady() && st->profile->hasInit()) {
             sendSetParam(st->profile, QStringLiteral("DEBUG_BLE_DATA_PATH"), value,
-                         [this, st, value](QString msg, bool isError) {
+                         [this, st, value](QString msg, QString error) {
+                     if (!error.isEmpty()) msg = error;
                              st->profile->log(QStringLiteral("App: setParam(DEBUG_BLE_DATA_PATH, %1) -> %2")
                                                   .arg(value, msg).toStdString());
-                             if (isError) {
+                             if (!error.isEmpty()) {
                                  QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                                       QStringLiteral("Failed to set DEBUG_BLE_DATA_PATH:\n%1").arg(msg));
                              }
@@ -1771,12 +1838,10 @@ void MainWindow::onBinDataToggled(int state) {
 
 void MainWindow::applyDongleDebug() {
     const QString value = _dongleDebugEnabled ? QStringLiteral("True") : QStringLiteral("False");
-    _controller->setParam("BLE_TRACE_ENABLED", value.toStdString(),
-                          [this, value](const std::string& result, const std::string&) {
-                              postToGui([this, value, result]() {
-                                  appLog(QStringLiteral("App: setParam(BLE_TRACE_ENABLED, %1) -> %2")
-                                             .arg(value, QString::fromStdString(result)));
-                              });
+    sendControllerSetParam(QStringLiteral("BLE_TRACE_ENABLED"), value,
+                          [this, value](QString result, QString error) {
+                              appLog(QStringLiteral("App: setParam(BLE_TRACE_ENABLED, %1) -> %2")
+                                         .arg(value, error.isEmpty() ? result : error));
                           });
 }
 
@@ -1790,20 +1855,18 @@ void MainWindow::onDongleDebugToggled(int state) {
 void MainWindow::onTranslateImuToggled(int state) {
     const QString value = state == Qt::Checked ? QStringLiteral("True") : QStringLiteral("False");
     appLog(QStringLiteral("User: translate IMU %1").arg(value));
-    _controller->setParam("TRANSLATE_IMU", value.toStdString(),
-                          [this, value](const std::string& result, const std::string&) {
-                              postToGui([this, value, result]() {
-                                  appLog(QStringLiteral("App: setParam(TRANSLATE_IMU, %1) -> %2")
-                                             .arg(value, QString::fromStdString(result)));
-                              });
+    sendControllerSetParam(QStringLiteral("TRANSLATE_IMU"), value,
+                          [this, value](QString result, QString error) {
+                              appLog(QStringLiteral("App: setParam(TRANSLATE_IMU, %1) -> %2")
+                                         .arg(value, error.isEmpty() ? result : error));
                           });
 }
 
 void MainWindow::onAutoReconnectToggled(bool checked) {
     appLog(QStringLiteral("User: auto reconnect %1")
                .arg(checked ? QStringLiteral("ON") : QStringLiteral("OFF")));
-    for (const auto& st : _deviceStates) {
-        st->profile->setAutoReconnect(checked);
+    for (auto* profile : _controller->getSensors()) {
+        profile->setAutoReconnect(checked);
     }
 }
 
@@ -1830,15 +1893,16 @@ void MainWindow::retargetWaveforms() {
     RingBuffer* buf = nullptr;
     QStringList labels;
     double yLow = -1.0, yHigh = 1.0;
+    bool fixedY = true;
     switch (typeIndex) {
     case 0:
         buf = st ? &st->acc : nullptr;
-        labels = {QStringLiteral("ACC-X"), QStringLiteral("ACC-Y"), QStringLiteral("ACC-Z")};
+        labels = {QStringLiteral("ACC-X (g)"), QStringLiteral("ACC-Y (g)"), QStringLiteral("ACC-Z (g)")};
         yLow = -8; yHigh = 8;
         break;
     case 1:
         buf = st ? &st->gyro : nullptr;
-        labels = {QStringLiteral("GYRO-X"), QStringLiteral("GYRO-Y"), QStringLiteral("GYRO-Z")};
+        labels = {QStringLiteral("GYRO-X (dps)"), QStringLiteral("GYRO-Y (dps)"), QStringLiteral("GYRO-Z (dps)")};
         yLow = -2000; yHigh = 2000;
         break;
     case 2:
@@ -1846,9 +1910,19 @@ void MainWindow::retargetWaveforms() {
         labels = {QStringLiteral("W"), QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")};
         yLow = -1; yHigh = 1;
         break;
+    case 3:
+        buf = st ? &st->euler : nullptr;
+        labels = {QStringLiteral("Pitch(Y) (deg)"), QStringLiteral("Roll(X) (deg)"), QStringLiteral("Yaw(Z) (deg)")};
+        yLow = -180; yHigh = 180;
+        break;
+    case 4:
+        buf = st ? &st->mag : nullptr;
+        labels = {QStringLiteral("MAG-X (uT)"), QStringLiteral("MAG-Y (uT)"), QStringLiteral("MAG-Z (uT)")};
+        fixedY = false;
+        break;
     default:
         buf = st ? &st->euler : nullptr;
-        labels = {QStringLiteral("Pitch(Y)"), QStringLiteral("Roll(X)"), QStringLiteral("Yaw(Z)")};
+        labels = {QStringLiteral("Pitch(Y) (deg)"), QStringLiteral("Roll(X) (deg)"), QStringLiteral("Yaw(Z) (deg)")};
         yLow = -180; yHigh = 180;
         break;
     }
@@ -1860,7 +1934,11 @@ void MainWindow::retargetWaveforms() {
         _wave2d->setPlaceholder(QStringLiteral("Not connected"));
     }
     _wave2d->setLabels(labels);
-    _wave2d->setFixedYRange(yLow, yHigh);
+    if (fixedY) {
+        _wave2d->setFixedYRange(yLow, yHigh);
+    } else {
+        _wave2d->setAutoYRange();
+    }
 
     // The spectrum tracks the active 2D type: same channel labels/colors;
     // cleared until the next FFT result arrives.
@@ -1897,7 +1975,7 @@ int MainWindow::bioPageCount(const std::shared_ptr<DeviceState>& st) const {
     }
     const int extras = (st->info.ECGChannelCount > 0 ? 1 : 0)
                        + (st->info.BRTHChannelCount > 0 ? 1 : 0)
-                       + (st->info.MagAngleChannelCount > 0 ? 1 : 0);
+                       + (st->info.AngleChannelCount > 0 ? 1 : 0);
     const int perPage = _bioWidgets.size() - extras;
     const int total = st->info.EEGChannelCount > 0 ? st->info.EEGChannelCount
                       : st->eeg.allocated ? st->eeg.channels : 0;
@@ -1957,29 +2035,29 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                                : QStringLiteral("Not connected");
 
     if (kind == DeviceState::BioKind::EMG) {
-        // EMG device: up to 8 EMG channels, no paging. A mag-angle stream
-        // takes the row right after the EMG channel rows (a mag-only device
-        // uses this mode too); the Angle row also splits with a spectrum.
-        const bool hasMag = st->info.MagAngleChannelCount > 0 || st->magAngle.allocated;
-        const int emgCh = st->emg.allocated ? qMin(st->emg.channels, _bioWidgets.size() - int(hasMag)) : 0;
-        const int magIndex = emgCh;
-        _bioTitleLabel->setText(hasMag && emgCh > 0 ? QStringLiteral("EMG + Angle Waveform")
-                                : hasMag ? QStringLiteral("Angle Waveform")
+        // EMG device: up to 8 EMG channels, no paging. An angle stream
+        // takes the row right after the EMG channel rows (an angle-only
+        // device uses this mode too); the Angle row also splits with a spectrum.
+        const bool hasAngle = st->info.AngleChannelCount > 0 || st->angle.allocated;
+        const int emgCh = st->emg.allocated ? qMin(st->emg.channels, _bioWidgets.size() - int(hasAngle)) : 0;
+        const int angleIndex = emgCh;
+        _bioTitleLabel->setText(hasAngle && emgCh > 0 ? QStringLiteral("EMG + Angle Waveform")
+                                : hasAngle ? QStringLiteral("Angle Waveform")
                                          : QStringLiteral("EMG Waveform"));
         for (int i = 0; i < _bioWidgets.size(); ++i) {
             if (i < emgCh) {
                 _bioWidgets[i]->setSource(&st->emg, &st->bufMutex, i);
                 _bioWidgets[i]->setAutoYRange();
-                _bioWidgets[i]->setLabels({QStringLiteral("EMG-%1").arg(i + 1)});
+                _bioWidgets[i]->setLabels({QStringLiteral("EMG-%1 (uV)").arg(i + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, &st->emg, i, i, QStringLiteral("EMG-%1").arg(i + 1));
+                setBioSpectrum(i, &st->emg, i, i, QStringLiteral("EMG-%1 (uV)").arg(i + 1));
                 _bioTargets.append({&st->emgImpedance, i});
-            } else if (hasMag && i == magIndex && st->magAngle.allocated) {
-                _bioWidgets[i]->setSource(&st->magAngle, &st->bufMutex, 0, i);
+            } else if (hasAngle && i == angleIndex && st->angle.allocated) {
+                _bioWidgets[i]->setSource(&st->angle, &st->bufMutex, 0, i);
                 _bioWidgets[i]->setFixedYRange(0.0, 180.0);
-                _bioWidgets[i]->setLabels({QStringLiteral("Angle")});
+                _bioWidgets[i]->setLabels({QStringLiteral("Angle (deg)")});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, &st->magAngle, 0, i, QStringLiteral("Angle"));
+                setBioSpectrum(i, &st->angle, 0, i, QStringLiteral("Angle (deg)"));
                 _bioTargets.append(BioTarget{});
             } else {
                 _bioWidgets[i]->setSource(nullptr, nullptr, i);
@@ -1992,17 +2070,17 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
             }
         }
     } else if (kind == DeviceState::BioKind::EEG) {
-        // EEG device: channels per page = 8 - hasECG - hasBRTH - hasMag; the
+        // EEG device: channels per page = 8 - hasECG - hasBRTH - hasAngle; the
         // current page's EEG channels fill the leading widgets, the extra
         // rows sit at the bottom: BRTH last, ECG above it, Angle above ECG.
         // EEG channel rows and the ECG/Angle rows split 50/50 with a spectrum
         // on the left; BRTH / unused rows stay full-width.
         const bool hasECG = st->info.ECGChannelCount > 0 || st->ecg.allocated;
         const bool hasBRTH = st->info.BRTHChannelCount > 0 || st->brth.allocated;
-        const bool hasMag = st->info.MagAngleChannelCount > 0 || st->magAngle.allocated;
-        _bioTitleLabel->setText(hasMag ? QStringLiteral("EEG + ECG + BRTH + Angle Waveform")
+        const bool hasAngle = st->info.AngleChannelCount > 0 || st->angle.allocated;
+        _bioTitleLabel->setText(hasAngle ? QStringLiteral("EEG + ECG + BRTH + Angle Waveform")
                                        : QStringLiteral("EEG + ECG + BRTH Waveform"));
-        const int perPage = _bioWidgets.size() - int(hasECG) - int(hasBRTH) - int(hasMag);
+        const int perPage = _bioWidgets.size() - int(hasECG) - int(hasBRTH) - int(hasAngle);
         const int total = st->info.EEGChannelCount > 0 ? st->info.EEGChannelCount
                           : st->eeg.allocated ? st->eeg.channels : 0;
         const int pages = qMax(1, (total + perPage - 1) / perPage);
@@ -2010,7 +2088,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
         const int startCh = _bioPage * perPage;
         const int brthIndex = _bioWidgets.size() - 1;
         const int ecgIndex = brthIndex - int(hasBRTH);
-        const int magIndex = ecgIndex - int(hasECG);
+        const int angleIndex = ecgIndex - int(hasECG);
         for (int i = 0; i < _bioWidgets.size(); ++i) {
             const int eegCh = startCh + i;
             if (i < perPage && eegCh < total && st->eeg.allocated) {
@@ -2018,30 +2096,30 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                 // stable per channel across pages.
                 _bioWidgets[i]->setSource(&st->eeg, &st->bufMutex, eegCh);
                 _bioWidgets[i]->setAutoYRange();
-                _bioWidgets[i]->setLabels({QStringLiteral("EEG-%1").arg(eegCh + 1)});
+                _bioWidgets[i]->setLabels({QStringLiteral("EEG-%1 (uV)").arg(eegCh + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, &st->eeg, eegCh, eegCh, QStringLiteral("EEG-%1").arg(eegCh + 1));
+                setBioSpectrum(i, &st->eeg, eegCh, eegCh, QStringLiteral("EEG-%1 (uV)").arg(eegCh + 1));
                 _bioTargets.append({&st->eegImpedance, eegCh});
             } else if (hasECG && i == ecgIndex && st->ecg.allocated) {
                 _bioWidgets[i]->setSource(&st->ecg, &st->bufMutex, 0);
                 _bioWidgets[i]->setAutoYRange();
-                _bioWidgets[i]->setLabels({QStringLiteral("ECG")});
+                _bioWidgets[i]->setLabels({QStringLiteral("ECG (uV)")});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, &st->ecg, 0, 0, QStringLiteral("ECG"));
+                setBioSpectrum(i, &st->ecg, 0, 0, QStringLiteral("ECG (uV)"));
                 _bioTargets.append({&st->ecgImpedance, 0});
             } else if (hasBRTH && i == brthIndex && st->brth.allocated) {
                 _bioWidgets[i]->setSource(&st->brth, &st->bufMutex, 0);
                 _bioWidgets[i]->setAutoYRange();
-                _bioWidgets[i]->setLabels({QStringLiteral("BRTH")});
+                _bioWidgets[i]->setLabels({QStringLiteral("BRTH (uV)")});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, nullptr, -1, -1, QString());
                 _bioTargets.append({&st->brthImpedance, 0});
-            } else if (hasMag && i == magIndex && st->magAngle.allocated) {
-                _bioWidgets[i]->setSource(&st->magAngle, &st->bufMutex, 0, i);
+            } else if (hasAngle && i == angleIndex && st->angle.allocated) {
+                _bioWidgets[i]->setSource(&st->angle, &st->bufMutex, 0, i);
                 _bioWidgets[i]->setFixedYRange(0.0, 180.0);
-                _bioWidgets[i]->setLabels({QStringLiteral("Angle")});
+                _bioWidgets[i]->setLabels({QStringLiteral("Angle (deg)")});
                 _bioWidgets[i]->setPlaceholder(QString());
-                setBioSpectrum(i, &st->magAngle, 0, i, QStringLiteral("Angle"));
+                setBioSpectrum(i, &st->angle, 0, i, QStringLiteral("Angle (deg)"));
                 _bioTargets.append(BioTarget{});
             } else {
                 _bioWidgets[i]->setSource(nullptr, nullptr, i);
@@ -2057,12 +2135,10 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
             }
         }
     } else if (kind == DeviceState::BioKind::PPG) {
-        // PPG device: fixed 6 plots on the leading widgets: 2x EEG fp1/fp2 +
-        // 2x PPG red/ir led + 2x SpO2 spo2/heart_rate; the trailing widgets
-        // stay blank. No paging; the two EEG plots carry impedance side
-        // texts like the EEG mode. The EEG/PPG rows split 50/50 with a
-        // spectrum on the left; the SpO2 rows (low-rate derived values) stay
-        // full-width.
+        // PPG device: 2x EEG fp1/fp2 + 2x PPG red/ir led + 2x SpO2
+        // spo2/heart_rate; the trailing widgets stay blank. No paging; the two
+        // EEG plots carry impedance side texts like the EEG mode. The EEG/PPG
+        // rows split 50/50 with a spectrum on the left; SpO2 rows stay full-width.
         _bioTitleLabel->setText(QStringLiteral("EEG + PPG + SpO2 Waveform"));
         const struct {
             RingBuffer DeviceState::*buffer;
@@ -2071,12 +2147,12 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
             bool isEeg;
             bool hasFft;
         } plotConfig[] = {
-            {&DeviceState::eeg, 0, "fp1", true, true},
-            {&DeviceState::eeg, 1, "fp2", true, true},
+            {&DeviceState::eeg, 0, "fp1 (uV)", true, true},
+            {&DeviceState::eeg, 1, "fp2 (uV)", true, true},
             {&DeviceState::ppg, 0, "red_led", false, true},
             {&DeviceState::ppg, 1, "ir_led", false, true},
-            {&DeviceState::spo2, 0, "spo2", false, false},
-            {&DeviceState::spo2, 1, "heart_rate", false, false},
+            {&DeviceState::spo2, 0, "spo2 (%)", false, false},
+            {&DeviceState::spo2, 1, "heart_rate (bpm)", false, false},
         };
         const int plotCount = static_cast<int>(sizeof(plotConfig) / sizeof(plotConfig[0]));
         for (int i = 0; i < _bioWidgets.size(); ++i) {
@@ -2138,6 +2214,7 @@ void MainWindow::refreshValueLabels() {
     case 0: buf = &st->acc; break;
     case 1: buf = &st->gyro; break;
     case 2: buf = &st->quat; break;
+    case 4: buf = &st->mag; break;
     default: buf = &st->euler; break;
     }
     QMutexLocker lock(&st->bufMutex);
@@ -2199,17 +2276,15 @@ void MainWindow::refreshSdkLabel() {
     }
     _backendQueryPending = true;
     _backendQueryMs = now;
-    _controller->getParam("BACK_END", [this](const std::string& result, const std::string&) {
-        const QString backend = QString::fromStdString(result);
-        postToGui([this, backend]() {
-            _backendQueryPending = false;
-            if (backend == _shownBackend || backend.startsWith(QStringLiteral("Error"))) {
-                return;
-            }
-            _shownBackend = backend;
-            _sdkLabel->setText(QStringLiteral("SDK: %1 | Backend: %2")
-                                   .arg(QString::fromStdString(_controller->getVersion()), _shownBackend));
-        });
+    sendControllerGetParam(QStringLiteral("BACK_END"), [this](QString result, QString error) {
+        _backendQueryPending = false;
+        if (!error.isEmpty() || result == _shownBackend) {
+            return;
+        }
+        _shownBackend = result;
+        _sdkLabel->setText(QStringLiteral("SDK: %1 | Backend: %2")
+                               .arg(QString::fromStdString(_controller->getVersion()))
+                               .arg(_shownBackend));
     });
 }
 
@@ -2863,6 +2938,7 @@ void MainWindow::maybeSubmitFft(const std::shared_ptr<DeviceState>& st) {
     case 0: buf = &st->acc; break;
     case 1: buf = &st->gyro; break;
     case 2: buf = &st->quat; break;
+    case 4: buf = &st->mag; break;
     default: buf = &st->euler; break;
     }
     std::vector<std::vector<float>> snapshot;
@@ -3044,7 +3120,7 @@ void MainWindow::onPlotTick() {
     // The bio buffers are lazily sized on the first batch; target the widgets
     // once the buffer for the device's bio mode exists.
     const bool bioReady = st && ((st->bioKind() == DeviceState::BioKind::EMG
-                                  && (st->emg.allocated || st->magAngle.allocated))
+                                  && (st->emg.allocated || st->angle.allocated))
                                  || (st->bioKind() == DeviceState::BioKind::EEG && st->eeg.allocated)
                                  || (st->bioKind() == DeviceState::BioKind::PPG && st->ppg.allocated));
     if (bioReady && !_bioWidgets.isEmpty() && !_bioWidgets.first()->hasSource()) {

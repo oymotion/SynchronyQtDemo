@@ -33,10 +33,10 @@ public:
 
     // Data sink installed by MainWindow. Fires on the SDK data thread and
     // must only enqueue. Exactly one of owned/borrowed is set, per
-    // setCloneData(): in clone mode `owned` carries an owning Data and
-    // `borrowed` is empty; in zero-copy mode `borrowed` carries the view.
-    std::function<void(const std::string& mac, QSharedPointer<sensor::SensorData> owned,
-                       sensor::SensorDataView borrowed)> dataSink;
+    // setCloneData(): in clone mode `owned` carries owning Data clones and
+    // `borrowed` is empty; in zero-copy mode `borrowed` carries the view batch.
+    std::function<void(const std::string& mac, QVector<QSharedPointer<sensor::SensorData>> owned,
+                       std::vector<sensor::SensorDataView> borrowed)> dataSink;
     // Clone Data switch: on = every batch is deep-copied before enqueueing;
     // off (default) = zero-copy.
     void setCloneData(bool on) { _cloneData.store(on); }

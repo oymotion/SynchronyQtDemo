@@ -76,21 +76,31 @@ void SdkBridge::onData(sensor::SensorProfile* profile,
     // Copy the mac out of the by-value getDevice() result.
     const std::string mac = profile->getDevice().mac;
     if (_cloneData.load()) {
-        // Clone Data on: deep copy + enqueue.
+        // Clone Data on: deep copy + enqueue the batch.
+        QVector<QSharedPointer<sensor::SensorData>> owned;
+        owned.reserve(static_cast<int>(batch.size()));
         for (const auto& view : batch) {
             if (view.getSamples() == nullptr || view.getSampleCount() <= 0 || view.getChannelCount() <= 0) {
                 continue;
             }
-            dataSink(mac, QSharedPointer<sensor::SensorData>::create(view.clone()), {});
+            owned.push_back(QSharedPointer<sensor::SensorData>::create(view.clone()));
+        }
+        if (!owned.isEmpty()) {
+            dataSink(mac, std::move(owned), {});
         }
         return;
     }
-    // Clone Data off (zero-copy): enqueue the borrowed view.
+    // Clone Data off (zero-copy): enqueue the borrowed view batch.
+    std::vector<sensor::SensorDataView> borrowed;
+    borrowed.reserve(batch.size());
     for (const auto& view : batch) {
         if (view.getSamples() == nullptr || view.getSampleCount() <= 0 || view.getChannelCount() <= 0) {
             continue;
         }
-        dataSink(mac, nullptr, view);
+        borrowed.push_back(view);
+    }
+    if (!borrowed.empty()) {
+        dataSink(mac, {}, std::move(borrowed));
     }
 }
 
@@ -100,7 +110,7 @@ void SdkBridge::onAutoReconnect(sensor::SensorProfile* profile,
     // Answering true makes the app take over session recovery: the GUI
     // re-drives the connect/init/stream flow and replays the recorded
     // setParam history (restore = a last session existed).
-    if (profile == nullptr) {
+    if (profile == nullptr || !profile->getAutoReconnect()) {
         answer(false);
         return;
     }

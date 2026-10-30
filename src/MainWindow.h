@@ -134,6 +134,7 @@ private:
     std::vector<sensor::SensorProfile*> liveReadySensors();
 
     // Connect chain (each step bounces back to the GUI thread).
+    bool autoRecoveryCancelled(const std::shared_ptr<DeviceState>& st);
     void onProfileReady(const QString& mac);
     void continueAfterInit(const QString& mac, bool ok, const QString& err);
     void continueAfterInfo(const QString& mac, const sensor::DeviceInfo& info, const QString& err);
@@ -143,12 +144,18 @@ private:
     // Records one successful user setParam for the auto-reconnect restore
     // replay; replays the recorded key/value list one command at a time.
     void recordSavedParam(const QString& mac, const QString& key,
-                          const QString& value, const QString& result);
+                          const QString& value);
     void restoreSavedParams(const QString& mac, int index);
 
     void sendSetParam(sensor::SensorProfile* profile,
                       const QString& key, const QString& value,
-                      std::function<void(QString result, bool isError)> completion = nullptr);
+                      std::function<void(QString result, QString error)> completion = nullptr);
+    void sendGetParam(sensor::SensorProfile* profile, const QString& key,
+                      std::function<void(QString result, QString error)> completion);
+    void sendControllerGetParam(const QString& key,
+                                std::function<void(QString result, QString error)> completion = nullptr);
+    void sendControllerSetParam(const QString& key, const QString& value,
+                                std::function<void(QString result, QString error)> completion = nullptr);
     void refreshControlStates(const std::shared_ptr<DeviceState>& st);
     // One chained getParam query of the control-state refresh; applies the
     // collected answers once every key has answered.
@@ -243,11 +250,11 @@ private:
     // refreshes the UI.
     struct QueuedItem {
         QString mac;
-        QSharedPointer<sensor::SensorData> owned; // set in clone mode
-        sensor::SensorDataView borrowed;          // set in zero-copy mode
+        QVector<QSharedPointer<sensor::SensorData>> owned; // set in clone mode
+        std::vector<sensor::SensorDataView> borrowed;      // set in zero-copy mode
     };
-    void enqueueData(const std::string& mac, QSharedPointer<sensor::SensorData> owned,
-                     sensor::SensorDataView borrowed);
+    void enqueueData(const std::string& mac, QVector<QSharedPointer<sensor::SensorData>> owned,
+                     std::vector<sensor::SensorDataView> borrowed);
     void drainDataQueue();
     std::deque<QueuedItem> _dataQueue;
     std::mutex _dataQueueMutex;

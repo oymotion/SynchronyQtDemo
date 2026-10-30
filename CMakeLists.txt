@@ -81,6 +81,7 @@ set(DEMO_SOURCES
     src/WaveformWidget.cpp
     src/SpectrumWidget.h
     src/SpectrumWidget.cpp
+    src/SpectrumCompute.h
     src/LiveFilter.h
     src/LiveFilter.cpp
     src/CubeWidget.h

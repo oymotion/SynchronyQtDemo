@@ -146,6 +146,9 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
     case sensor::SensorData::NTF_EULER_DATA:
         target = &euler;
         break;
+    case sensor::SensorData::NTF_MAG:
+        target = &mag;
+        break;
     case sensor::SensorData::NTF_GEST: {
         // Masked-out channels are skipped entirely.
         if (fresh && data.isChannelEnabled(0) && data.getSampleCount() > 0) {
@@ -188,8 +191,8 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
         impedance = &brthImpedance;
         seconds = BIO_BUFFER_SECONDS;
         break;
-    case sensor::SensorData::NTF_MAG_ANGLE:
-        target = &magAngle;
+    case sensor::SensorData::NTF_ANGLE:
+        target = &angle;
         seconds = BIO_BUFFER_SECONDS;
         break;
     default:
@@ -327,11 +330,12 @@ void DeviceState::clearBuffers() {
     QMutexLocker lock(&bufMutex);
     acc.clear();
     gyro.clear();
+    mag.clear();
     emg.clear();
     eeg.clear();
     ecg.clear();
     brth.clear();
-    magAngle.clear();
+    angle.clear();
     ppg.clear();
     spo2.clear();
     quat.clear();
@@ -352,8 +356,8 @@ DeviceState::BioKind DeviceState::bioKind() const {
     if (info.EEGChannelCount > 0 || eeg.allocated) {
         return BioKind::EEG;
     }
-    if (info.EMGChannelCount > 0 || info.MagAngleChannelCount > 0
-        || emg.allocated || magAngle.allocated) {
+    if (info.EMGChannelCount > 0 || info.AngleChannelCount > 0
+        || emg.allocated || angle.allocated) {
         return BioKind::EMG;
     }
     return BioKind::None;
@@ -412,7 +416,8 @@ QString DeviceState::buildStatusText() const {
         {sensor::SensorData::NTF_ECG, QStringLiteral("ECG")},
         {sensor::SensorData::NTF_BRTH, QStringLiteral("BRTH")},
         {sensor::SensorData::NTF_GEST, QStringLiteral("GEST")},
-        {sensor::SensorData::NTF_MAG_ANGLE, QStringLiteral("Angle")},
+        {sensor::SensorData::NTF_MAG, QStringLiteral("Mag")},
+        {sensor::SensorData::NTF_ANGLE, QStringLiteral("Angle")},
     };
     QStringList parts{head};
     for (const auto& entry : order) {
@@ -445,7 +450,8 @@ QString DeviceState::buildRateText() const {
         {sensor::SensorData::NTF_ECG, QStringLiteral("ECG")},
         {sensor::SensorData::NTF_BRTH, QStringLiteral("BRTH")},
         {sensor::SensorData::NTF_GEST, QStringLiteral("GEST")},
-        {sensor::SensorData::NTF_MAG_ANGLE, QStringLiteral("Angle")},
+        {sensor::SensorData::NTF_MAG, QStringLiteral("Mag")},
+        {sensor::SensorData::NTF_ANGLE, QStringLiteral("Angle")},
     };
     QStringList entries;
     for (const auto& entry : order) {
@@ -482,7 +488,8 @@ QString sensorTypeName(int type) {
     case sensor::SensorData::NTF_QUATERNION: return QStringLiteral("QUAT");
     case sensor::SensorData::NTF_GEST: return QStringLiteral("GEST");
     case sensor::SensorData::NTF_EMG_RAW_DATA: return QStringLiteral("EMG");
-    case sensor::SensorData::NTF_MAG_ANGLE: return QStringLiteral("Angle");
+    case sensor::SensorData::NTF_ANGLE: return QStringLiteral("Angle");
+    case sensor::SensorData::NTF_MAG: return QStringLiteral("MAG");
     case sensor::SensorData::NTF_EEG: return QStringLiteral("EEG");
     case sensor::SensorData::NTF_PPG: return QStringLiteral("PPG");
     case sensor::SensorData::NTF_SPO2: return QStringLiteral("SPO2");
