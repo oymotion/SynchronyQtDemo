@@ -132,6 +132,7 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
 
     RingBuffer* target = nullptr;
     QVector<float>* impedance = nullptr;
+    QVector<float>* saturation = nullptr;
     double seconds = IMU_BUFFER_SECONDS;
     switch (data.getDataType()) {
     case sensor::SensorData::NTF_ACC:
@@ -164,11 +165,13 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
     case sensor::SensorData::NTF_EMG_RAW_DATA:
         target = &emg;
         impedance = &emgImpedance;
+        saturation = &emgSaturation;
         seconds = BIO_BUFFER_SECONDS;
         break;
     case sensor::SensorData::NTF_EEG:
         target = &eeg;
         impedance = &eegImpedance;
+        saturation = &eegSaturation;
         // PPG devices plot EEG (fp1/fp2) in the shared 5s bio buffer set
         // instead of the 1s EEG-mode buffer.
         seconds = bioKind() == BioKind::PPG ? IMU_BUFFER_SECONDS : BIO_BUFFER_SECONDS;
@@ -184,11 +187,13 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
     case sensor::SensorData::NTF_ECG:
         target = &ecg;
         impedance = &ecgImpedance;
+        saturation = &ecgSaturation;
         seconds = BIO_BUFFER_SECONDS;
         break;
     case sensor::SensorData::NTF_BRTH:
         target = &brth;
         impedance = &brthImpedance;
+        saturation = &brthSaturation;
         seconds = BIO_BUFFER_SECONDS;
         break;
     case sensor::SensorData::NTF_ANGLE:
@@ -236,6 +241,12 @@ void DeviceState::appendData(const sensor::SensorDataView& data) {
                 impedance->append(-1.0f);
             }
             (*impedance)[ch] = data.getImpedance(ch, data.getSampleCount() - 1);
+            if (saturation != nullptr) {
+                while (saturation->size() <= ch) {
+                    saturation->append(-1.0f);
+                }
+                (*saturation)[ch] = data.getSaturation(ch, data.getSampleCount() - 1);
+            }
         }
     }
 }
@@ -344,6 +355,10 @@ void DeviceState::clearBuffers() {
     eegImpedance.fill(-1.0f);
     ecgImpedance.fill(-1.0f);
     brthImpedance.fill(-1.0f);
+    emgSaturation.fill(-1.0f);
+    eegSaturation.fill(-1.0f);
+    ecgSaturation.fill(-1.0f);
+    brthSaturation.fill(-1.0f);
     gesture = rawGesture = possibility = strength = -1;
 }
 

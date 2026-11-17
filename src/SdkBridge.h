@@ -48,6 +48,7 @@ public:
 signals:
     void btEnableChanged(bool enabled);
     void scanResults(QVector<DeviceEntry> devices);
+    void scanStateChanged(bool isScanning, QString errorMsg);
     void stateChanged(QString mac, int state);
     void errorOccurred(QString mac, QString message);
     void powerChanged(QString mac, int power);

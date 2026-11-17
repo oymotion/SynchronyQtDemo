@@ -11,13 +11,14 @@
 extern "C" {
 #endif
 
-#define SEN_CAPI_VERSION 22
+#define SEN_CAPI_VERSION 24
 
 typedef struct sen_controller sen_controller_t;
 typedef struct sen_profile sen_profile_t;
 
 typedef void (*sen_scan_result_cb)(void* ctx, const sen_ble_device_t* devices, size_t count);
 typedef void (*sen_enable_changed_cb)(void* ctx, int enabled);
+typedef void (*sen_scan_state_cb)(void* ctx, int isScanning, const char* errorMsg);
 
 typedef void (*sen_data_cb)(void* ctx, sen_profile_t* profile,
                             const sen_data_view_t* views, size_t viewCount);
@@ -31,6 +32,8 @@ typedef void (*sen_device_info_update_cb)(void* ctx, sen_profile_t* profile,
                                           const sen_device_info_t* info);
 typedef void (*sen_data_transfer_state_cb)(void* ctx, sen_profile_t* profile,
                                            int isTransferring);
+typedef void (*sen_auto_reconnecting_state_cb)(void* ctx, sen_profile_t* profile,
+                                               int isAutoReconnecting);
 
 typedef struct {
     uint32_t structSize;
@@ -41,12 +44,14 @@ typedef struct {
     sen_auto_reconnect_cb onAutoReconnect;
     sen_device_info_update_cb onDeviceInfoUpdate;
     sen_data_transfer_state_cb onDataTransferStateChange;
+    sen_auto_reconnecting_state_cb onAutoReconnectingStateChange;
 } sen_profile_cbs_t;
 
 typedef struct {
     uint32_t structSize;
     sen_scan_result_cb   onScanResult;
     sen_enable_changed_cb onEnableChanged;
+    sen_scan_state_cb    onScanStateChange;
 } sen_controller_cbs_t;
 
 typedef void (*sen_completion_cb)(void* ctx, int result, const char* errorMsg);
@@ -165,6 +170,7 @@ SEN_API void sen_profile_get_param(sen_profile_t* profile, int timeoutMs,
 
 SEN_API void sen_profile_set_auto_reconnect(sen_profile_t* profile, int enabled);
 SEN_API int sen_profile_get_auto_reconnect(sen_profile_t* profile);
+SEN_API int sen_profile_is_auto_reconnecting(sen_profile_t* profile);
 
 SEN_API void sen_profile_log(sen_profile_t* profile, const char* message, const char* level);
 

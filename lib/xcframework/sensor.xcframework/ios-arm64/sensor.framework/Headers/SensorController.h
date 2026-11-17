@@ -8,6 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol SensorControllerDelegate <NSObject>
 - (void)onEnableChanged:(bool)enabled;
 - (void)onScanResult:(NSArray<BLEDevice*>*)bleDevices;
+@optional
+- (void)onScanStateChange:(bool)isScanning errorMsg:(NSString*)errorMsg;
 @end
 
 @interface SensorController : NSObject

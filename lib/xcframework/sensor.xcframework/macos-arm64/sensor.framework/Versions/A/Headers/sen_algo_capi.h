@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SEN_ALGO_CAPI_VERSION 7  /* PySDKAlgo 2c564348e4ca7a657c7cc68e051f097aec10f456 */
+#define SEN_ALGO_CAPI_VERSION 18  /* PySDKAlgo 94af4c0de48b7d8442d95fc73b37e7ff13b7dbae */
 
 typedef struct sen_algo_controller sen_algo_controller_t;
 
