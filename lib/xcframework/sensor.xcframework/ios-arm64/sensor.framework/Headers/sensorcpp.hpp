@@ -61,26 +61,27 @@ inline void reportCallbackException(const char* what) noexcept {
     }
 }
 
-inline std::unordered_set<std::thread::id>& sdkThreadIds() {
-    static std::unordered_set<std::thread::id>* ids =
-        new std::unordered_set<std::thread::id>();
-    return *ids;
-}
-
-inline std::mutex& sdkThreadIdsMutex() {
-    static std::mutex* m = new std::mutex();
-    return *m;
+inline int& sdkThreadDepth() {
+    thread_local int depth = 0;
+    return depth;
 }
 
 inline void markSdkThread() {
-    std::lock_guard<std::mutex> lock(sdkThreadIdsMutex());
-    sdkThreadIds().insert(std::this_thread::get_id());
+    ++sdkThreadDepth();
+}
+
+inline void unmarkSdkThread() {
+    if (sdkThreadDepth() > 0) --sdkThreadDepth();
 }
 
 inline bool isSdkThread() {
-    std::lock_guard<std::mutex> lock(sdkThreadIdsMutex());
-    return sdkThreadIds().count(std::this_thread::get_id()) != 0;
+    return sdkThreadDepth() > 0;
 }
+
+struct SdkThreadScope {
+    SdkThreadScope() { markSdkThread(); }
+    ~SdkThreadScope() { unmarkSdkThread(); }
+};
 
 inline void throwOnSdkThread() {
     if (isSdkThread()) {
@@ -93,6 +94,16 @@ inline std::string paramResultOrError(const std::string& result, const std::stri
         return error;
     }
     return result;
+}
+
+inline void completeParamPromise(const std::shared_ptr<std::promise<std::string>>& promise,
+                                 const std::string& result, const std::string& error) {
+    const std::string failure = paramResultOrError(result, error);
+    if (failure.rfind("Error", 0) == 0 || failure.rfind("ERROR:", 0) == 0) {
+        promise->set_exception(std::make_exception_ptr(std::runtime_error(failure)));
+        return;
+    }
+    promise->set_value(result);
 }
 
 inline std::atomic<int>& assumedCmdTimeoutMsRef() {
@@ -127,7 +138,7 @@ using ScanOnceCallback = std::function<void(const std::vector<BLEDevice>&)>;
 namespace detail {
 
 inline void completionTrampoline(void* ctx, int result, const char* errorMsg) noexcept {
-    markSdkThread();
+    SdkThreadScope sdkThreadScope;
     std::unique_ptr<CallContext<CompletionCallback>> holder(
         static_cast<CallContext<CompletionCallback>*>(ctx));
     try {
@@ -142,7 +153,7 @@ inline void completionTrampoline(void* ctx, int result, const char* errorMsg) no
 }
 
 inline void paramTrampoline(void* ctx, const char* result, const char* errorMsg) noexcept {
-    markSdkThread();
+    SdkThreadScope sdkThreadScope;
     std::unique_ptr<CallContext<ParamCallback>> holder(
         static_cast<CallContext<ParamCallback>*>(ctx));
     try {
@@ -157,7 +168,7 @@ inline void paramTrampoline(void* ctx, const char* result, const char* errorMsg)
 }
 
 inline void batteryTrampoline(void* ctx, int result, const char* errorMsg) noexcept {
-    markSdkThread();
+    SdkThreadScope sdkThreadScope;
     std::unique_ptr<CallContext<BatteryCallback>> holder(
         static_cast<CallContext<BatteryCallback>*>(ctx));
     try {
@@ -173,7 +184,7 @@ inline void batteryTrampoline(void* ctx, int result, const char* errorMsg) noexc
 
 inline void infoTrampoline(void* ctx, const sen_device_info_t* info,
                            const char* errorMsg) noexcept {
-    markSdkThread();
+    SdkThreadScope sdkThreadScope;
     std::unique_ptr<CallContext<DeviceInfoCallback>> holder(
         static_cast<CallContext<DeviceInfoCallback>*>(ctx));
     try {
@@ -193,7 +204,7 @@ inline void infoTrampoline(void* ctx, const sen_device_info_t* info,
 
 inline void multiResultTrampoline(void* ctx, const char* const* macs, const int* oks,
                                   const char* const* errors, size_t count) noexcept {
-    markSdkThread();
+    SdkThreadScope sdkThreadScope;
     std::unique_ptr<CallContext<MultiResultCallback>> holder(
         static_cast<CallContext<MultiResultCallback>*>(ctx));
     try {
@@ -219,7 +230,7 @@ inline void multiResultTrampoline(void* ctx, const char* const* macs, const int*
 }
 
 inline void scanOnceTrampoline(void* ctx, const sen_ble_device_t* devices, size_t count) noexcept {
-    markSdkThread();
+    SdkThreadScope sdkThreadScope;
     std::unique_ptr<CallContext<ScanOnceCallback>> holder(
         static_cast<CallContext<ScanOnceCallback>*>(ctx));
     try {
@@ -252,6 +263,7 @@ struct AnswerForwarder {
 struct SensorControllerCallbacks {
     std::function<void(const std::vector<BLEDevice>&)> onScanResult;
     std::function<void(bool enabled)> onEnableChanged;
+    std::function<void(bool isScanning, const std::string& errorMsg)> onScanStateChange;
 };
 
 struct SensorProfileCallbacks {
@@ -455,7 +467,7 @@ public:
         std::future<std::string> fut = promise->get_future();
         setParam(timeoutMs, key, value,
                  [promise](const std::string& result, const std::string& error) {
-                     promise->set_value(detail::paramResultOrError(result, error));
+                     detail::completeParamPromise(promise, result, error);
                  });
         return fut;
     }
@@ -465,7 +477,7 @@ public:
         std::future<std::string> fut = setParamAsync(timeoutMs, key, value);
         if (fut.wait_for(std::chrono::milliseconds(detail::effectiveTimeoutMs(timeoutMs)) +
                          std::chrono::seconds(15)) == std::future_status::timeout) {
-            return "Error: Timeout";
+            throw std::runtime_error("Error: Timeout");
         }
         return fut.get();
     }
@@ -474,7 +486,7 @@ public:
         std::future<std::string> fut = promise->get_future();
         getParam(timeoutMs, key,
                  [promise](const std::string& result, const std::string& error) {
-                     promise->set_value(detail::paramResultOrError(result, error));
+                     detail::completeParamPromise(promise, result, error);
                  });
         return fut;
     }
@@ -483,7 +495,7 @@ public:
         std::future<std::string> fut = getParamAsync(timeoutMs, key);
         if (fut.wait_for(std::chrono::milliseconds(detail::effectiveTimeoutMs(timeoutMs)) +
                          std::chrono::seconds(15)) == std::future_status::timeout) {
-            return "Error: Timeout";
+            throw std::runtime_error("Error: Timeout");
         }
         return fut.get();
     }
@@ -545,6 +557,10 @@ public:
         return sen_profile_get_auto_reconnect(_handle) != 0;
     }
 
+    bool isAutoReconnecting() const {
+        return sen_profile_is_auto_reconnecting(_handle) != 0;
+    }
+
     void log(const std::string& message, const std::string& level = "I") const {
         try {
             sen_profile_log(_handle, message.c_str(), level.c_str());
@@ -574,7 +590,7 @@ private:
 
     static void onDataCb(void* ctx, sen_profile_t* ,
                          const sen_data_view_t* views, size_t viewCount) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             SensorProfile* self = static_cast<SensorProfile*>(ctx);
             if (self == nullptr || !self->_cbs.onData || views == nullptr) {
@@ -594,7 +610,7 @@ private:
     }
 
     static void onStateChangeCb(void* ctx, sen_profile_t* , int newState) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             SensorProfile* self = static_cast<SensorProfile*>(ctx);
             if (self == nullptr) {
@@ -616,7 +632,7 @@ private:
     }
 
     static void onErrorCb(void* ctx, sen_profile_t* , const char* errorMsg) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             SensorProfile* self = static_cast<SensorProfile*>(ctx);
             if (self != nullptr && self->_cbs.onError) {
@@ -630,7 +646,7 @@ private:
     }
 
     static void onPowerChangeCb(void* ctx, sen_profile_t* , int power) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             SensorProfile* self = static_cast<SensorProfile*>(ctx);
             if (self == nullptr) {
@@ -653,7 +669,7 @@ private:
                                   int hasLastSession,
                                   sen_auto_reconnect_answer_cb answer,
                                   void* answerCtx) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             SensorProfile* self = static_cast<SensorProfile*>(ctx);
             if (self == nullptr) {
@@ -684,7 +700,7 @@ private:
 
     static void onDeviceInfoUpdateCb(void* ctx, sen_profile_t* ,
                                      const sen_device_info_t* info) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             SensorProfile* self = static_cast<SensorProfile*>(ctx);
             if (self == nullptr || info == nullptr) {
@@ -704,7 +720,7 @@ private:
 
     static void onDataTransferStateChangeCb(void* ctx, sen_profile_t* ,
                                             int isTransferring) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             SensorProfile* self = static_cast<SensorProfile*>(ctx);
             if (self != nullptr && self->_cbs.onDataTransferStateChange) {
@@ -739,6 +755,7 @@ public:
         cbs.structSize = sizeof(cbs);
         cbs.onScanResult = &SensorController::onScanResultCb;
         cbs.onEnableChanged = &SensorController::onEnableChangedCb;
+        cbs.onScanStateChange = &SensorController::onScanStateChangeCb;
         sen_controller_set_callbacks(_handle, &cbs, _cbCtx.get());
     }
     ~SensorController() { reset(); }
@@ -974,7 +991,7 @@ public:
         auto promise = std::make_shared<std::promise<std::string>>();
         std::future<std::string> fut = promise->get_future();
         getParam(key, [promise](const std::string& result, const std::string& error) {
-            promise->set_value(detail::paramResultOrError(result, error));
+            detail::completeParamPromise(promise, result, error);
         });
         return fut;
     }
@@ -982,7 +999,7 @@ public:
         detail::throwOnSdkThread();
         std::future<std::string> fut = getParamAsync(key);
         if (fut.wait_for(std::chrono::seconds(20)) == std::future_status::timeout) {
-            return "Error: Timeout";
+            throw std::runtime_error("Error: Timeout");
         }
         return fut.get();
     }
@@ -991,7 +1008,7 @@ public:
         auto promise = std::make_shared<std::promise<std::string>>();
         std::future<std::string> fut = promise->get_future();
         setParam(key, value, [promise](const std::string& result, const std::string& error) {
-            promise->set_value(detail::paramResultOrError(result, error));
+            detail::completeParamPromise(promise, result, error);
         });
         return fut;
     }
@@ -999,7 +1016,7 @@ public:
         detail::throwOnSdkThread();
         std::future<std::string> fut = setParamAsync(key, value);
         if (fut.wait_for(std::chrono::seconds(20)) == std::future_status::timeout) {
-            return "Error: Timeout";
+            throw std::runtime_error("Error: Timeout");
         }
         return fut.get();
     }
@@ -1159,7 +1176,7 @@ private:
     }
 
     static void onScanResultCb(void* ctx, const sen_ble_device_t* devices, size_t count) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             CallbackContext* cbCtx = static_cast<CallbackContext*>(ctx);
             if (cbCtx == nullptr || !cbCtx->cbs.onScanResult || devices == nullptr) {
@@ -1179,11 +1196,25 @@ private:
     }
 
     static void onEnableChangedCb(void* ctx, int enabled) {
-        detail::markSdkThread();
+        detail::SdkThreadScope sdkThreadScope;
         try {
             CallbackContext* cbCtx = static_cast<CallbackContext*>(ctx);
             if (cbCtx != nullptr && cbCtx->cbs.onEnableChanged) {
                 cbCtx->cbs.onEnableChanged(enabled != 0);
+            }
+        } catch (const std::exception& e) {
+            detail::reportCallbackException(e.what());
+        } catch (...) {
+            detail::reportCallbackException(nullptr);
+        }
+    }
+
+    static void onScanStateChangeCb(void* ctx, int isScanning, const char* errorMsg) {
+        detail::SdkThreadScope sdkThreadScope;
+        try {
+            CallbackContext* cbCtx = static_cast<CallbackContext*>(ctx);
+            if (cbCtx != nullptr && cbCtx->cbs.onScanStateChange) {
+                cbCtx->cbs.onScanStateChange(isScanning != 0, detail::strOrEmpty(errorMsg));
             }
         } catch (const std::exception& e) {
             detail::reportCallbackException(e.what());

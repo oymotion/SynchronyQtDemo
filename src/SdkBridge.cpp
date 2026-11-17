@@ -6,6 +6,9 @@ sensor::SensorControllerCallbacks SdkBridge::controllerCallbacks() {
         onScanResult(devices);
     };
     cbs.onEnableChanged = [this](bool enabled) { onEnableChanged(enabled); };
+    cbs.onScanStateChange = [this](bool isScanning, const std::string& errorMsg) {
+        emit scanStateChanged(isScanning, QString::fromStdString(errorMsg));
+    };
     return cbs;
 }
 

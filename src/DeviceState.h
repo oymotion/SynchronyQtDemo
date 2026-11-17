@@ -66,6 +66,10 @@ public:
     QVector<float> eegImpedance;
     QVector<float> ecgImpedance;
     QVector<float> brthImpedance;
+    QVector<float> emgSaturation;
+    QVector<float> eegSaturation;
+    QVector<float> ecgSaturation;
+    QVector<float> brthSaturation;
 
     // Right-side bio panel mode: PPG-capable devices show a fixed EEG +
     // PPG + SpO2 plot set, EEG-capable devices show paged EEG (+ ECG /

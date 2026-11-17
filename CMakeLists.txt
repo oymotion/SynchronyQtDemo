@@ -167,6 +167,14 @@ elseif(WIN32)
             "${SENSOR_WIN_DLL}"
             "$<TARGET_FILE_DIR:DemoEMG>/"
     )
+    set(SENSOR_WIN_HELPER "${SENSOR_SDK_ROOT}/lib/windows/${SENSOR_SDK_WIN_ARCH}/Release/sensor_ble_helper.exe")
+    if(EXISTS "${SENSOR_WIN_HELPER}")
+        add_custom_command(TARGET DemoEMG POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${SENSOR_WIN_HELPER}"
+                "$<TARGET_FILE_DIR:DemoEMG>/sensor_ble_helper.exe"
+        )
+    endif()
     if(WINDEPLOYQT_EXECUTABLE)
         add_custom_command(TARGET DemoEMG POST_BUILD
             COMMAND "${WINDEPLOYQT_EXECUTABLE}"
@@ -190,6 +198,9 @@ elseif(APPLE)
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${SENSOR_SDK_MAC_DYLIB}"
             "$<TARGET_FILE_DIR:DemoEMG>/libsensor.dylib"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${SENSOR_SDK_ROOT}/lib/macos/sensor_ble_helper"
+            "$<TARGET_FILE_DIR:DemoEMG>/sensor_ble_helper"
     )
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SENSOR_LINUX_LIB "${SENSOR_SDK_ROOT}/lib/linux/${SENSOR_SDK_LINUX_ARCH}/libsensor.so")
@@ -222,6 +233,14 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "${SENSOR_LINUX_LIB}"
             "$<TARGET_FILE_DIR:DemoEMG>/${SENSOR_LINUX_SONAME}"
     )
+    set(SENSOR_LINUX_HELPER "${SENSOR_SDK_ROOT}/lib/linux/${SENSOR_SDK_LINUX_ARCH}/sensor_ble_helper")
+    if(EXISTS "${SENSOR_LINUX_HELPER}")
+        add_custom_command(TARGET DemoEMG POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${SENSOR_LINUX_HELPER}"
+                "$<TARGET_FILE_DIR:DemoEMG>/sensor_ble_helper"
+        )
+    endif()
 else()
     message(FATAL_ERROR "DemoEMG supports Windows, Linux, macOS, iOS and Android only")
 endif()

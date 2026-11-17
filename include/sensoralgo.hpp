@@ -54,9 +54,9 @@ public:
             answerCompletion(std::move(cb), "Error: Invalid arguments");
             return;
         }
-        sen_algo_controller_init(_handle, "",
-                                 cb ? &completionTrampoline : nullptr,
-                                 cb ? makeCallContext(std::move(cb)) : nullptr);
+        const auto trampoline = cb ? &completionTrampoline : nullptr;
+        void* context = cb ? makeCallContext(std::move(cb)) : nullptr;
+        sen_algo_controller_init(_handle, "", trampoline, context);
     }
 
     bool hasInit() const {
@@ -74,9 +74,9 @@ public:
             answerParam(std::move(cb), "Error: Invalid arguments");
             return;
         }
-        sen_algo_controller_set_param(_handle, key.c_str(), value.c_str(),
-                                      cb ? &paramTrampoline : nullptr,
-                                      cb ? makeCallContext(std::move(cb)) : nullptr);
+        const auto trampoline = cb ? &paramTrampoline : nullptr;
+        void* context = cb ? makeCallContext(std::move(cb)) : nullptr;
+        sen_algo_controller_set_param(_handle, key.c_str(), value.c_str(), trampoline, context);
     }
 
     void getParam(const std::string& key, ParamCallback cb = nullptr) {
@@ -84,9 +84,9 @@ public:
             answerParam(std::move(cb), "Error: Invalid arguments");
             return;
         }
-        sen_algo_controller_get_param(_handle, key.c_str(),
-                                      cb ? &paramTrampoline : nullptr,
-                                      cb ? makeCallContext(std::move(cb)) : nullptr);
+        const auto trampoline = cb ? &paramTrampoline : nullptr;
+        void* context = cb ? makeCallContext(std::move(cb)) : nullptr;
+        sen_algo_controller_get_param(_handle, key.c_str(), trampoline, context);
     }
 
     void pushSamples(const std::vector<SensorDataView>& views, const std::string& param = "",
@@ -100,9 +100,10 @@ public:
         for (const auto& view : views) {
             nativeViews.push_back(view.nativeView());
         }
+        const auto trampoline = cb ? &completionTrampoline : nullptr;
+        void* context = cb ? makeCallContext(std::move(cb)) : nullptr;
         sen_algo_controller_push_samples(_handle, nativeViews.data(), nativeViews.size(), param.c_str(),
-                                         cb ? &completionTrampoline : nullptr,
-                                         cb ? makeCallContext(std::move(cb)) : nullptr);
+                                         trampoline, context);
     }
 
     void getResult(const std::string& key, ParamCallback cb = nullptr) {
@@ -110,9 +111,9 @@ public:
             answerParam(std::move(cb), "Error: Invalid arguments");
             return;
         }
-        sen_algo_controller_get_result(_handle, key.c_str(),
-                                       cb ? &paramTrampoline : nullptr,
-                                       cb ? makeCallContext(std::move(cb)) : nullptr);
+        const auto trampoline = cb ? &paramTrampoline : nullptr;
+        void* context = cb ? makeCallContext(std::move(cb)) : nullptr;
+        sen_algo_controller_get_result(_handle, key.c_str(), trampoline, context);
     }
 
 private:

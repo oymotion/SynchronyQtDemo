@@ -60,6 +60,7 @@ private slots:
     void onStopScan();
     void onConnectClicked();
     void onDisconnectClicked();
+    void onDataClicked();
     void onDeviceSelected(QListWidgetItem* item);
     void onTypeChanged(int index);
     void onLiveFilterChanged(int index);
@@ -83,6 +84,7 @@ private slots:
     // SDK bridge events (queued onto the GUI thread)
     void onBtEnableChanged(bool enabled);
     void onScanResults(QVector<DeviceEntry> devices);
+    void onScanStateChanged(bool isScanning, QString errorMsg);
     void onStateChanged(QString mac, int state);
     void onError(QString mac, QString message);
     void onPowerChanged(QString mac, int power);
@@ -110,6 +112,7 @@ private:
                                     QButtonGroup** group, const QString& key);
     void applySdkDebugLog();
     void applyDongleDebug();
+    void setScanStatus(bool isScanning, const QString& errorMsg);
 
     // Writes one app event line into the SDK log: with a device state it
     // lands in that device's log, otherwise in the general SDK log.
@@ -135,6 +138,7 @@ private:
 
     // Connect chain (each step bounces back to the GUI thread).
     bool autoRecoveryCancelled(const std::shared_ptr<DeviceState>& st);
+    void abortAutoReconnect(sensor::SensorProfile* profile);
     void onProfileReady(const QString& mac);
     void continueAfterInit(const QString& mac, bool ok, const QString& err);
     void continueAfterInfo(const QString& mac, const sensor::DeviceInfo& info, const QString& err);
@@ -220,6 +224,10 @@ private:
     QSet<QString> _restoreParamsMacs;
     // MACs with an actively transferring data stream.
     QSet<QString> _streamingMacs;
+    QSet<QString> _connectingMacs;
+    QSet<QString> _disconnectingMacs;
+    QSet<QString> _initingMacs;
+    QSet<QString> _dataSwitchingMacs;
     QString _currentMac;
 
     // Replay state: one entry per replaying member (a single replay is a
@@ -241,6 +249,7 @@ private:
     bool _updatingControls = false;
     bool _shuttingDown = false;
     bool _scanning = false;
+    qint64 _scanErrorHoldUntil = 0;
 
     std::atomic<bool> _analyzeRunning{false};
     std::thread _replayStartThread;
@@ -306,7 +315,7 @@ private:
     QPushButton* _btnScan = nullptr;
     QPushButton* _btnStopScan = nullptr;
     QPushButton* _btnConnect = nullptr;
-    QPushButton* _btnDisconnect = nullptr;
+    QPushButton* _btnData = nullptr;
     QPushButton* _btnReplay = nullptr;
     QPushButton* _btnAnalyze = nullptr;
     QPushButton* _btnReplayPause = nullptr;
@@ -319,6 +328,7 @@ private:
     QComboBox* _typeCombo = nullptr;
     QComboBox* _filterCombo = nullptr;
     QLabel* _statusLabel = nullptr;
+    QLabel* _scanStatusLabel = nullptr;
     QLabel* _sdkLabel = nullptr;
     QString _shownBackend;
     bool _backendQueryPending = false;
@@ -374,6 +384,7 @@ private:
     struct BioTarget {
         const QVector<float>* impedance = nullptr;
         int channel = 0;
+        const QVector<float>* saturation = nullptr;
     };
     QVector<BioTarget> _bioTargets;
 

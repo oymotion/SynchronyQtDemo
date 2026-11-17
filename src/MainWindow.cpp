@@ -48,7 +48,7 @@ const int CMD_TIMEOUT_MS = 5000;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.60";
+const char* const DEMO_VERSION = "0.1.61";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
@@ -120,7 +120,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     _controller = std::make_unique<sensor::SensorController>();
     _bridge = std::make_shared<SdkBridge>();
     _controller->setCallbacks(_bridge->controllerCallbacks());
-    sendControllerSetParam(QStringLiteral("TRANSLATE_IMU"), QStringLiteral("False"));
+    sendControllerSetParam(QStringLiteral("TRANSLATE_IMU"), QStringLiteral("True"));
 
     setupUi();
 
@@ -128,6 +128,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             this, &MainWindow::onBtEnableChanged, Qt::QueuedConnection);
     connect(_bridge.get(), &SdkBridge::scanResults,
             this, &MainWindow::onScanResults, Qt::QueuedConnection);
+    connect(_bridge.get(), &SdkBridge::scanStateChanged,
+            this, &MainWindow::onScanStateChanged, Qt::QueuedConnection);
     connect(_bridge.get(), &SdkBridge::stateChanged,
             this, &MainWindow::onStateChanged, Qt::QueuedConnection);
     connect(_bridge.get(), &SdkBridge::errorOccurred,
@@ -295,9 +297,9 @@ QWidget* MainWindow::buildDevicePage() {
     _btnConnect = new QPushButton(QStringLiteral("Connect"), page);
     _btnConnect->setEnabled(false);
     connect(_btnConnect, &QPushButton::clicked, this, &MainWindow::onConnectClicked);
-    _btnDisconnect = new QPushButton(QStringLiteral("Disconnect"), page);
-    _btnDisconnect->setEnabled(false);
-    connect(_btnDisconnect, &QPushButton::clicked, this, &MainWindow::onDisconnectClicked);
+    _btnData = new QPushButton(QStringLiteral("Start Data Streaming"), page);
+    _btnData->setEnabled(false);
+    connect(_btnData, &QPushButton::clicked, this, &MainWindow::onDataClicked);
 
     _btnReplay = new QPushButton(QStringLiteral("Replay Bin File"), page);
     connect(_btnReplay, &QPushButton::clicked, this, &MainWindow::onReplayClicked);
@@ -318,7 +320,7 @@ QWidget* MainWindow::buildDevicePage() {
     btnRow->addWidget(_btnScan);
     btnRow->addWidget(_btnStopScan);
     btnRow->addWidget(_btnConnect);
-    btnRow->addWidget(_btnDisconnect);
+    btnRow->addWidget(_btnData);
     layout->addLayout(btnRow);
     auto* replayRow = new QHBoxLayout();
     replayRow->addWidget(_btnReplay);
@@ -332,7 +334,7 @@ QWidget* MainWindow::buildDevicePage() {
     btnCol->addWidget(_btnScan);
     btnCol->addWidget(_btnStopScan);
     btnCol->addWidget(_btnConnect);
-    btnCol->addWidget(_btnDisconnect);
+    btnCol->addWidget(_btnData);
     btnCol->addStretch();
     scanRow->addLayout(btnCol);
     scanRow->addLayout(devCol, 1);
@@ -346,6 +348,9 @@ QWidget* MainWindow::buildDevicePage() {
     layout->addLayout(scanRow);
 #endif
 
+    _scanStatusLabel = new QLabel(QStringLiteral("Scan: stopped"), page);
+    _scanStatusLabel->setStyleSheet(QStringLiteral("color: #666666"));
+    layout->addWidget(_scanStatusLabel);
     _statusLabel = new QLabel(QStringLiteral("Not Connected"), page);
     layout->addWidget(_statusLabel);
     _rateLabel = new QLabel(QString(), page);
@@ -528,7 +533,7 @@ QWidget* MainWindow::buildSettingsPage() {
     connect(_chkDongleDebug, &QCheckBox::stateChanged, this, &MainWindow::onDongleDebugToggled);
     debugLayout->addWidget(_chkDongleDebug);
     _chkTranslateImu = new QCheckBox(QStringLiteral("Translate IMU (split ACC/GYRO/EULER/QUAT)"), page);
-    _chkTranslateImu->setChecked(false);
+    _chkTranslateImu->setChecked(true);
     connect(_chkTranslateImu, &QCheckBox::stateChanged, this, &MainWindow::onTranslateImuToggled);
     debugLayout->addWidget(_chkTranslateImu);
 
@@ -644,28 +649,83 @@ QGroupBox* MainWindow::buildSampleRateGroup(QWidget* page, const QString& title,
 void MainWindow::onStartScan() {
     if (!_controller->isEnable()) {
         appLog(QStringLiteral("User: start scan rejected (Bluetooth disabled)"), "W");
+        setScanStatus(false, QStringLiteral("Bluetooth disabled"));
         _statusLabel->setText(QStringLiteral("Please enable Bluetooth first"));
         return;
     }
     appLog(QStringLiteral("User: start scan"));
-    if (!_controller->isScanning()) {
-        _controller->startScan(SCAN_DEVICE_PERIOD_MS);
+    const bool wasScanning = _controller->isScanning();
+    const bool started = wasScanning || _controller->startScan(SCAN_DEVICE_PERIOD_MS);
+    appLog(QStringLiteral("App: startScan result: %1, was_scanning=%2")
+               .arg(started).arg(wasScanning));
+    _scanning = started;
+    _btnScan->setEnabled(!started);
+    _btnStopScan->setEnabled(started);
+    if (started && !wasScanning) {
+        setScanStatus(true, QString());
     }
-    _scanning = true;
-    _btnScan->setEnabled(false);
-    _btnStopScan->setEnabled(true);
 }
 
 void MainWindow::onStopScan() {
     appLog(QStringLiteral("Stop scan"));
-    _controller->stopScan();
+    const bool stopped = _controller->stopScan();
+    appLog(QStringLiteral("App: stopScan result: %1").arg(stopped));
     _scanning = false;
     _btnScan->setEnabled(_replayMacs.isEmpty());
     _btnStopScan->setEnabled(false);
+    setScanStatus(false, QString());
+}
+
+void MainWindow::onScanStateChanged(bool isScanning, QString errorMsg) {
+    const bool scanIntent = _controller->isScanning();
+    _scanning = scanIntent;
+    appLog(QStringLiteral("Scan event: is_scanning=%1, error=%2, intent=%3")
+               .arg(isScanning)
+               .arg(errorMsg.isEmpty() ? QStringLiteral("-") : errorMsg)
+               .arg(scanIntent), "D");
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!errorMsg.isEmpty()) {
+        _scanErrorHoldUntil = now + 5000;
+    } else if (!isScanning) {
+        _scanErrorHoldUntil = 0;
+    }
+    if (errorMsg.isEmpty() && isScanning && now < _scanErrorHoldUntil) {
+        return;
+    }
+    _btnScan->setEnabled(_replayMacs.isEmpty() && !scanIntent);
+    _btnStopScan->setEnabled(scanIntent);
+    if (!isScanning && errorMsg.isEmpty() && scanIntent) {
+        _scanStatusLabel->setText(QStringLiteral("Scan: paused (waiting to resume)"));
+        _scanStatusLabel->setStyleSheet(QStringLiteral("color: #cc7a00"));
+    } else {
+        setScanStatus(isScanning, errorMsg);
+    }
+    if (!errorMsg.isEmpty()) {
+        appLog(QStringLiteral("Scan state: %1").arg(errorMsg), "W");
+    }
+}
+
+void MainWindow::setScanStatus(bool isScanning, const QString& errorMsg) {
+    if (isScanning) {
+        if (!errorMsg.isEmpty()) {
+            _scanStatusLabel->setText(QStringLiteral("Scan: active with errors: %1").arg(errorMsg));
+            _scanStatusLabel->setStyleSheet(QStringLiteral("color: #cc7a00"));
+        } else {
+            _scanStatusLabel->setText(QStringLiteral("Scan: scanning"));
+            _scanStatusLabel->setStyleSheet(QStringLiteral("color: #16823b"));
+        }
+    } else if (!errorMsg.isEmpty()) {
+        _scanStatusLabel->setText(QStringLiteral("Scan: error: %1").arg(errorMsg));
+        _scanStatusLabel->setStyleSheet(QStringLiteral("color: #c62828"));
+    } else {
+        _scanStatusLabel->setText(QStringLiteral("Scan: stopped"));
+        _scanStatusLabel->setStyleSheet(QStringLiteral("color: #666666"));
+    }
 }
 
 void MainWindow::onBtEnableChanged(bool enabled) {
     if (!enabled) {
+        setScanStatus(false, QStringLiteral("Bluetooth disabled"));
         _statusLabel->setText(QStringLiteral("Please enable Bluetooth first"));
     }
 }
@@ -734,14 +794,36 @@ void MainWindow::onDeviceSelected(QListWidgetItem* item) {
 
 void MainWindow::updateButtonStates() {
     const QString mac = selectedMac();
-    const bool connected = !mac.isEmpty() && _deviceStates.contains(mac);
+    auto st = stateFor(mac);
+    auto* profile = st ? st->profile : _controller->getSensor(mac.toStdString());
+    const bool connected = st != nullptr;
+    const bool connecting = _connectingMacs.contains(mac);
+    const bool switching = _dataSwitchingMacs.contains(mac);
+    const bool reconnecting = profile && profile->isAutoReconnecting();
     const bool replaying = !_replayMacs.isEmpty();
-    _btnConnect->setEnabled(!replaying && !mac.isEmpty() && !connected);
-    _btnDisconnect->setEnabled(!replaying && connected);
+    _btnConnect->setText(reconnecting ? QStringLiteral("Abort Auto Reconnect")
+                                      : connected ? QStringLiteral("Disconnect")
+                                                  : QStringLiteral("Connect"));
+    _btnConnect->setEnabled(!replaying && !mac.isEmpty() && !connecting && !switching
+                            && !_disconnectingMacs.contains(mac));
+    const bool streaming = _streamingMacs.contains(mac);
+    _btnData->setText(streaming ? QStringLiteral("Stop Data Streaming")
+                                : QStringLiteral("Start Data Streaming"));
+    _btnData->setEnabled(!replaying && connected && !connecting && !switching
+                         && !_disconnectingMacs.contains(mac));
+    _scanning = _controller->isScanning();
     _btnScan->setEnabled(!replaying && !_scanning);
+    for (int i = 0; i < _deviceList->count(); ++i) {
+        const QString itemMac = _deviceList->item(i)->data(Qt::UserRole).toString();
+        if (_replayMacs.contains(itemMac)) {
+            updateReplayItemText(itemMac);
+        } else {
+            updateDeviceItemText(itemMac, _deviceStates.contains(itemMac));
+        }
+    }
     int liveCount = 0;
-    for (const auto& st : _deviceStates) {
-        if (!st->isReplay) {
+    for (const auto& state : _deviceStates) {
+        if (!state->isReplay) {
             ++liveCount;
         }
     }
@@ -766,15 +848,23 @@ void MainWindow::updateDeviceItemText(const QString& mac, bool connected) {
             }
         }
         QString text = QStringLiteral("RSSI: %1, Name: %2, Address: %3").arg(rssi).arg(name, mac);
-        // The [Streaming] mark comes from the SDK's data-transfer state
-        // push; a connected device whose stream is off keeps the plain
-        // [Connected] mark.
-        if (_streamingMacs.contains(mac)) {
-            text = QStringLiteral("[Streaming] ") + text;
+        auto st = stateFor(mac);
+        auto* profile = st ? st->profile : _controller->getSensor(mac.toStdString());
+        QString prefix;
+        if (_disconnectingMacs.contains(mac)) {
+            prefix = QStringLiteral("[Disconnecting...] ");
+        } else if (_initingMacs.contains(mac)) {
+            prefix = QStringLiteral("[Initing] ");
+        } else if (profile && profile->isAutoReconnecting()) {
+            prefix = QStringLiteral("[AutoReconnecting] ");
+        } else if (_connectingMacs.contains(mac)) {
+            prefix = QStringLiteral("[Connecting...] ");
+        } else if (_streamingMacs.contains(mac)) {
+            prefix = QStringLiteral("[Streaming] ");
         } else if (connected) {
-            text = QStringLiteral("[Connected] ") + text;
+            prefix = QStringLiteral("[Connected] ");
         }
-        item->setText(text);
+        item->setText(prefix + text);
         break;
     }
 }
@@ -802,14 +892,17 @@ void MainWindow::insertDeviceRowSorted(QListWidgetItem* item, int rssi) {
 }
 
 void MainWindow::evictStaleDevices(const QSet<QString>& present) {
-    // Rows absent from three consecutive scan rounds are dropped; connected
-    // devices and replay rows are exempt.
+    // Rows absent from four consecutive scan rounds are dropped; connected,
+    // connecting, auto-reconnecting and replay rows are exempt.
     for (int i = _discovered.size() - 1; i >= 0; --i) {
         const QString mac = _discovered[i].mac;
         if (present.contains(mac)) {
             continue;
         }
-        if (_replayMacs.contains(mac) || _deviceStates.contains(mac)) {
+        auto* profile = _controller->getSensor(mac.toStdString());
+        if (_replayMacs.contains(mac) || _deviceStates.contains(mac)
+            || _connectingMacs.contains(mac)
+            || (profile && profile->isAutoReconnecting())) {
             continue;
         }
         if (++_discovered[i].missedRounds < 4) {
@@ -845,7 +938,13 @@ void MainWindow::onConnectClicked() {
         _statusLabel->setText(QStringLiteral("Please select a device in the list first"));
         return;
     }
+    auto profile = _controller->getSensor(mac.toStdString());
+    if (profile && profile->isAutoReconnecting()) {
+        abortAutoReconnect(profile);
+        return;
+    }
     if (_deviceStates.contains(mac)) {
+        onDisconnectClicked();
         return;
     }
     QString name;
@@ -856,7 +955,6 @@ void MainWindow::onConnectClicked() {
         }
     }
     appLog(QStringLiteral("User: connect %1 (%2)").arg(name, mac));
-    auto profile = _controller->getSensor(mac.toStdString());
     if (!profile) {
         appLog(QStringLiteral("App: failed to create SensorProfile for %1").arg(mac), "E");
         _statusLabel->setText(QStringLiteral("Failed to create SensorProfile"));
@@ -875,24 +973,65 @@ void MainWindow::onConnectClicked() {
         _deviceStates.insert(mac, st);
     }
 
-    _btnConnect->setEnabled(false);
+    _connectingMacs.insert(mac);
     _currentMac = mac;
     retargetWaveforms();
     refreshInfoPanel();
     // Set after refreshInfoPanel, which rewrites the status.
     _statusLabel->setText(QStringLiteral("Connecting: %1 ...").arg(st->name));
+    updateButtonStates();
 
     if (_controller->isScanning()) {
         _controller->stopScan();
         _scanning = false;
         _btnScan->setEnabled(_replayMacs.isEmpty());
         _btnStopScan->setEnabled(false);
+        setScanStatus(false, QString());
     }
+    appLog(QStringLiteral("App: BLE connect begin: %1, autoReconnect=%2")
+               .arg(mac).arg(profile->getAutoReconnect()), "I", st);
     if (!profile->isReady()) {
-        profile->connect({}); // fire-and-forget; the GUI reacts to state-change signals
+        profile->connect([this, mac](bool ok, const std::string&) {
+            postToGui([this, mac, ok]() {
+                auto st = stateFor(mac);
+                appLog(QStringLiteral("App: BLE connect result: %1 -> %2").arg(mac).arg(ok),
+                       ok ? "I" : "E", st);
+                if (!ok) {
+                    _connectingMacs.remove(mac);
+                    onStateChanged(mac, disconnectedState());
+                    _statusLabel->setText(QStringLiteral("Failed to connect to %1").arg(mac));
+                    updateButtonStates();
+                }
+            });
+        });
     } else {
         onProfileReady(mac);
     }
+}
+
+void MainWindow::abortAutoReconnect(sensor::SensorProfile* profile) {
+    if (!profile) {
+        return;
+    }
+    const QString mac = QString::fromStdString(profile->getDevice().mac);
+    appLog(QStringLiteral("User: abort auto reconnect %1").arg(mac));
+    _btnConnect->setEnabled(false);
+    _btnData->setEnabled(false);
+    _statusLabel->setText(QStringLiteral("Aborting auto reconnect..."));
+    profile->disconnect([this, mac](bool ok, const std::string& error) {
+        postToGui([this, mac, ok, error]() {
+            if (!ok) {
+                appLog(QStringLiteral("App: failed to abort auto reconnect on %1: %2")
+                           .arg(mac, QString::fromStdString(error)), "E");
+            }
+            if (_currentMac == mac || selectedMac() == mac) {
+                _statusLabel->setText(ok ? QStringLiteral("Auto reconnect aborted")
+                                         : QStringLiteral("Failed to abort auto reconnect"));
+            }
+            updateDeviceItemText(mac, _deviceStates.contains(mac));
+            updateButtonStates();
+        });
+    });
 }
 
 void MainWindow::onDisconnectClicked() {
@@ -901,6 +1040,7 @@ void MainWindow::onDisconnectClicked() {
         return;
     }
     appLog(QStringLiteral("User: disconnect %1").arg(st->mac), "I", st);
+    _disconnectingMacs.insert(st->mac);
     // Grey out every NTF, filter and sample-rate control as soon as the
     // disconnect starts.
     for (auto* cb : _ntfBoxes) {
@@ -927,11 +1067,51 @@ void MainWindow::onDisconnectClicked() {
         onStateChanged(st->mac, disconnectedState());
         return;
     }
-    _btnDisconnect->setEnabled(false);
+    _btnData->setEnabled(false);
     _btnConnect->setEnabled(false);
     _statusLabel->setText(QStringLiteral("Disconnecting..."));
+    updateDeviceItemText(st->mac, true);
     st->profile->disconnect({}); // fire-and-forget; the GUI reacts to state-change signals
     // Teardown finishes in onStateChanged(Disconnected).
+}
+
+void MainWindow::onDataClicked() {
+    auto st = currentState();
+    if (!st || st->isReplay || !st->profile
+        || _dataSwitchingMacs.contains(st->mac)) {
+        return;
+    }
+    const QString mac = st->mac;
+    const bool start = !st->profile->hasStartDataNotification();
+    _dataSwitchingMacs.insert(mac);
+    _btnData->setEnabled(false);
+    _btnConnect->setEnabled(false);
+    _statusLabel->setText(start ? QStringLiteral("Starting data stream...")
+                                : QStringLiteral("Stopping data stream..."));
+    appLog(QStringLiteral("User: %1 data %2").arg(start ? "start" : "stop", mac), "I", st);
+    auto completion = [this, mac, start](bool ok, const std::string& error) {
+        postToGui([this, mac, start, ok, error]() {
+            auto st = stateFor(mac);
+            _dataSwitchingMacs.remove(mac);
+            if (!ok) {
+                appLog(QStringLiteral("App: failed to %1 data stream on %2: %3")
+                           .arg(start ? "start" : "stop", mac, QString::fromStdString(error)),
+                       "E", st);
+            }
+            if (_currentMac == mac) {
+                _statusLabel->setText(ok ? (start ? QStringLiteral("Data stream started")
+                                                  : QStringLiteral("Data stream stopped"))
+                                         : (start ? QStringLiteral("Failed to start data stream")
+                                                  : QStringLiteral("Failed to stop data stream")));
+            }
+            updateButtonStates();
+        });
+    };
+    if (start) {
+        st->profile->startData(CMD_TIMEOUT_MS, completion);
+    } else {
+        st->profile->stopData(CMD_TIMEOUT_MS, completion);
+    }
 }
 
 bool MainWindow::autoRecoveryCancelled(const std::shared_ptr<DeviceState>& st) {
@@ -956,6 +1136,8 @@ void MainWindow::onProfileReady(const QString& mac) {
         return;
     }
     if (!st->profile->hasInit()) {
+        _initingMacs.insert(mac);
+        updateDeviceItemText(mac, true);
         _statusLabel->setText(QStringLiteral("Initializing %1 ...").arg(st->name));
         st->profile->init(PACKAGE_COUNT, CMD_TIMEOUT_MS, POWER_REFRESH_PERIOD_MS,
                           [this, mac](bool result, const std::string& err) {
@@ -969,12 +1151,16 @@ void MainWindow::onProfileReady(const QString& mac) {
 }
 
 void MainWindow::continueAfterInit(const QString& mac, bool ok, const QString& err) {
+    _initingMacs.remove(mac);
     auto st = stateFor(mac);
     if (!st || autoRecoveryCancelled(st)) {
         return;
     }
+    appLog(QStringLiteral("App: init result: %1 -> %2").arg(mac).arg(ok), ok ? "I" : "E", st);
     if (!ok) {
         appLog(QStringLiteral("App: failed to initialize %1 (%2)").arg(st->name, mac), "E", st);
+        _connectingMacs.remove(mac);
+        onStateChanged(mac, disconnectedState());
         _statusLabel->setText(QStringLiteral("Failed to initialize %1: %2").arg(st->name, err));
         updateButtonStates();
         return;
@@ -1016,13 +1202,18 @@ void MainWindow::continueAfterStart(const QString& mac, bool ok, const QString& 
     if (!st || autoRecoveryCancelled(st)) {
         return;
     }
+    appLog(QStringLiteral("App: startDataNotification result: %1 -> %2").arg(mac).arg(ok),
+           ok ? "I" : "E", st);
     if (!ok) {
         appLog(QStringLiteral("App: failed to start data stream on %1").arg(mac), "E", st);
+        _connectingMacs.remove(mac);
+        onStateChanged(mac, disconnectedState());
         _statusLabel->setText(QStringLiteral("Failed to start data stream: %1").arg(err));
         updateButtonStates();
         return;
     }
     appLog(QStringLiteral("App: device connected and streaming: %1 (%2)").arg(st->name, mac), "I", st);
+    _connectingMacs.remove(mac);
     updateDeviceItemText(mac, true);
     applySessionParams(st, [this, mac]() {
         auto st = stateFor(mac);
@@ -1225,7 +1416,14 @@ void MainWindow::onStateChanged(QString mac, int state) {
         }
         return;
     }
+    if (state == disconnectedState()) {
+        _connectingMacs.remove(mac);
+        _disconnectingMacs.remove(mac);
+        _initingMacs.remove(mac);
+        _dataSwitchingMacs.remove(mac);
+    }
     if (state != disconnectedState() || !st || st->isReplay) {
+        updateButtonStates();
         return;
     }
     // Every disconnect tears the UI state down; with Auto Reconnect on, the
@@ -1300,8 +1498,11 @@ void MainWindow::onAutoReconnectRequested(QString mac, bool restore) {
         _deviceStates.insert(mac, st);
     }
     _currentMac = mac;
+    _connectingMacs.insert(mac);
     retargetWaveforms();
     refreshInfoPanel();
+    _statusLabel->setText(QStringLiteral("Auto reconnecting: %1 ...").arg(st->name));
+    updateButtonStates();
     if (!profile->isReady()) {
         profile->connect({}); // the Ready state-change drives the flow
     } else {
@@ -1404,6 +1605,7 @@ void MainWindow::onDataTransferStateChanged(QString mac, bool isTransferring) {
         return;
     }
     updateDeviceItemText(mac, st != nullptr);
+    updateButtonStates();
 }
 
 void MainWindow::updateReplayItemText(const QString& mac) {
@@ -1808,7 +2010,6 @@ void MainWindow::onDebugLogToggled(int state) {
                              if (!error.isEmpty()) {
                                  QMessageBox::warning(this, QStringLiteral("Set Parameter Failed"),
                                                       QStringLiteral("Failed to set DEBUG_LOG_PATH:\n%1").arg(msg));
-                                 return;
                              }
                          });
         }
@@ -1942,6 +2143,9 @@ void MainWindow::retargetWaveforms() {
 
     // The spectrum tracks the active 2D type: same channel labels/colors;
     // cleared until the next FFT result arrives.
+    for (QString& label : labels) {
+        label = label.left(label.indexOf(" ("));
+    }
     _spectrum->setLabels(labels);
     _spectrum->setPlaceholder(_wave2d->hasSource() ? QStringLiteral("Waiting for data ...")
                                                    : QStringLiteral("Not connected"));
@@ -2022,7 +2226,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
         if (buf != nullptr && channel >= 0) {
             _bioFftRows[row] = {buf, channel};
             _bioSpectra[row]->setColorIndex(colorIndex);
-            _bioSpectra[row]->setLabels({label});
+            _bioSpectra[row]->setLabels({label.left(label.indexOf(" ("))});
             _bioSpectra[row]->setPlaceholder(QString());
             _bioSpectra[row]->setVisible(true);
         } else {
@@ -2051,7 +2255,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                 _bioWidgets[i]->setLabels({QStringLiteral("EMG-%1 (uV)").arg(i + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, &st->emg, i, i, QStringLiteral("EMG-%1 (uV)").arg(i + 1));
-                _bioTargets.append({&st->emgImpedance, i});
+                _bioTargets.append({&st->emgImpedance, i, &st->emgSaturation});
             } else if (hasAngle && i == angleIndex && st->angle.allocated) {
                 _bioWidgets[i]->setSource(&st->angle, &st->bufMutex, 0, i);
                 _bioWidgets[i]->setFixedYRange(0.0, 180.0);
@@ -2099,21 +2303,21 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                 _bioWidgets[i]->setLabels({QStringLiteral("EEG-%1 (uV)").arg(eegCh + 1)});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, &st->eeg, eegCh, eegCh, QStringLiteral("EEG-%1 (uV)").arg(eegCh + 1));
-                _bioTargets.append({&st->eegImpedance, eegCh});
+                _bioTargets.append({&st->eegImpedance, eegCh, &st->eegSaturation});
             } else if (hasECG && i == ecgIndex && st->ecg.allocated) {
                 _bioWidgets[i]->setSource(&st->ecg, &st->bufMutex, 0);
                 _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({QStringLiteral("ECG (uV)")});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, &st->ecg, 0, 0, QStringLiteral("ECG (uV)"));
-                _bioTargets.append({&st->ecgImpedance, 0});
+                _bioTargets.append({&st->ecgImpedance, 0, &st->ecgSaturation});
             } else if (hasBRTH && i == brthIndex && st->brth.allocated) {
                 _bioWidgets[i]->setSource(&st->brth, &st->bufMutex, 0);
                 _bioWidgets[i]->setAutoYRange();
                 _bioWidgets[i]->setLabels({QStringLiteral("BRTH (uV)")});
                 _bioWidgets[i]->setPlaceholder(QString());
                 setBioSpectrum(i, nullptr, -1, -1, QString());
-                _bioTargets.append({&st->brthImpedance, 0});
+                _bioTargets.append({&st->brthImpedance, 0, &st->brthSaturation});
             } else if (hasAngle && i == angleIndex && st->angle.allocated) {
                 _bioWidgets[i]->setSource(&st->angle, &st->bufMutex, 0, i);
                 _bioWidgets[i]->setFixedYRange(0.0, 180.0);
@@ -2136,9 +2340,9 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
         }
     } else if (kind == DeviceState::BioKind::PPG) {
         // PPG device: 2x EEG fp1/fp2 + 2x PPG red/ir led + 2x SpO2
-        // spo2/heart_rate; the trailing widgets stay blank. No paging; the two
-        // EEG plots carry impedance side texts like the EEG mode. The EEG/PPG
-        // rows split 50/50 with a spectrum on the left; SpO2 rows stay full-width.
+        // spo2/heart_rate; the trailing widgets stay blank. No paging. The
+        // EEG/PPG rows split 50/50 with a spectrum on the left; SpO2 rows stay
+        // full-width.
         _bioTitleLabel->setText(QStringLiteral("EEG + PPG + SpO2 Waveform"));
         const struct {
             RingBuffer DeviceState::*buffer;
@@ -2172,7 +2376,7 @@ void MainWindow::layoutBio(const std::shared_ptr<DeviceState>& st) {
                     } else {
                         setBioSpectrum(i, nullptr, -1, -1, QString());
                     }
-                    _bioTargets.append(cfg.isEeg ? BioTarget{&st->eegImpedance, cfg.channel}
+                    _bioTargets.append(cfg.isEeg ? BioTarget{&st->eegImpedance, cfg.channel, &st->eegSaturation}
                                                  : BioTarget{});
                     bound = true;
                 }
@@ -2249,7 +2453,12 @@ void MainWindow::refreshBioSideTexts() {
         const QColor color = kOhm <= 500 ? QColor(60, 200, 60)
                              : kOhm <= 999 ? QColor(230, 160, 40)
                                            : QColor(220, 60, 60);
-        _bioWidgets[i]->setSideText(QString::asprintf("%.2f KOhm", kOhm), color);
+        QString text = QString::asprintf("%.2f KOhm", kOhm);
+        if (target.saturation != nullptr && target.channel < target.saturation->size()
+            && (*target.saturation)[target.channel] >= 0) {
+            text = QString::asprintf("%.0f%% | %.2f KOhm", (*target.saturation)[target.channel], kOhm);
+        }
+        _bioWidgets[i]->setSideText(text, color);
     }
 }
 
@@ -2472,7 +2681,7 @@ void MainWindow::setReplayModeUi(bool replaying) {
     _btnReplayStop->setEnabled(replaying);
     if (replaying) {
         _btnConnect->setEnabled(false);
-        _btnDisconnect->setEnabled(false);
+        _btnData->setEnabled(false);
         _btnMultiSync->setEnabled(false);
     } else {
         updateButtonStates();
@@ -3142,6 +3351,9 @@ void MainWindow::onPlotTick() {
     }
 
     ++_tickCount;
+    if (_tickCount % 4 == 0) {
+        updateButtonStates();
+    }
     if (_tickCount % (1000 / PLOT_UPDATE_INTERVAL_MS) == 0) {
         if (st) {
             st->updateActualRates();

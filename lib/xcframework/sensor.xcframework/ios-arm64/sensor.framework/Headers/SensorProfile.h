@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSString* stateString;
 @property (atomic, assign, readonly) bool hasInited;
 @property (atomic, assign, readonly) bool isDataTransfering;
+@property (atomic, assign, readonly) bool isAutoReconnecting;
 @property (atomic, assign, readonly) int cachedPower;
 @property (nonatomic) BOOL autoReconnect;
 
