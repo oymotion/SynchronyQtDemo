@@ -48,7 +48,7 @@ const int CMD_TIMEOUT_MS = 5000;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.61";
+const char* const DEMO_VERSION = "0.1.66";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
@@ -109,6 +109,12 @@ QString mtuText(const sensor::DeviceInfo& info) {
         return QStringLiteral("MTU: --");
     }
     return QStringLiteral("MTU: %1").arg(info.MTUSize);
+}
+
+bool isNeucirDevice(const sensor::DeviceInfo& info) {
+    const QString model = QString::fromStdString(info.modelName).trimmed();
+    return model.startsWith(QStringLiteral("ORE-3000"), Qt::CaseInsensitive)
+           || model.startsWith(QStringLiteral("OYFM-70"), Qt::CaseInsensitive);
 }
 
 int readyState() { return static_cast<int>(sensor::BLEDevice::State::Ready); }
@@ -386,6 +392,29 @@ QWidget* MainWindow::buildDevicePage() {
     layout->addLayout(infoRow);
 #endif
 
+    _neucirControlBox = new QGroupBox(QStringLiteral("NeuCir Remote Control"), page);
+    auto* neucirLayout = new QHBoxLayout(_neucirControlBox);
+    const struct {
+        const char* text;
+        const char* key;
+        const char* value;
+    } controls[] = {
+        {"APP_REMOTE", "NEUCIR_SET_MODE", "APP_REMOTE"},
+        {"OPEN", "NEUCIR_APP_CONTROL", "OPEN"},
+        {"CLOSE", "NEUCIR_APP_CONTROL", "CLOSE"},
+        {"STOP", "NEUCIR_APP_CONTROL", "STOP"},
+    };
+    for (const auto& control : controls) {
+        auto* button = new QPushButton(QString::fromLatin1(control.text), _neucirControlBox);
+        button->setProperty("neucirKey", QString::fromLatin1(control.key));
+        button->setProperty("neucirValue", QString::fromLatin1(control.value));
+        connect(button, &QPushButton::clicked, this, &MainWindow::onNeucirControlClicked);
+        neucirLayout->addWidget(button);
+    }
+    _neucirControlBox->setVisible(false);
+    _neucirControlBox->setEnabled(false);
+    layout->addWidget(_neucirControlBox);
+
     return page;
 }
 
@@ -529,7 +558,7 @@ QWidget* MainWindow::buildSettingsPage() {
     connect(_chkBinData, &QCheckBox::stateChanged, this, &MainWindow::onBinDataToggled);
     debugLayout->addWidget(_chkBinData);
     _chkDongleDebug = new QCheckBox(QStringLiteral("Enable debug dongle"), page);
-    _chkDongleDebug->setChecked(true);
+    _chkDongleDebug->setChecked(false);
     connect(_chkDongleDebug, &QCheckBox::stateChanged, this, &MainWindow::onDongleDebugToggled);
     debugLayout->addWidget(_chkDongleDebug);
     _chkTranslateImu = new QCheckBox(QStringLiteral("Translate IMU (split ACC/GYRO/EULER/QUAT)"), page);
@@ -830,6 +859,7 @@ void MainWindow::updateButtonStates() {
     _btnMultiSync->setText(_streamingMacs.isEmpty() ? QStringLiteral("Multi Start")
                                                     : QStringLiteral("Multi Stop"));
     _btnMultiSync->setEnabled(!replaying && liveCount >= 1);
+    refreshNeucirControls(st);
 }
 
 void MainWindow::updateDeviceItemText(const QString& mac, bool connected) {
@@ -1185,16 +1215,22 @@ void MainWindow::continueAfterInfo(const QString& mac, const sensor::DeviceInfo&
     } else {
         qWarning("[DemoEMG] fetchDeviceInfo failed: %s", qPrintable(err));
     }
-    if (!st->profile->hasStartDataNotification()) {
-        st->profile->startData(CMD_TIMEOUT_MS,
-            [this, mac](bool result, const std::string& err) {
-                postToGui([this, mac, result, err]() {
-                    continueAfterStart(mac, result, QString::fromStdString(err));
+    applySessionParams(st, [this, mac]() {
+        auto st = stateFor(mac);
+        if (!st || !st->profile || autoRecoveryCancelled(st)) {
+            return;
+        }
+        if (!st->profile->hasStartDataNotification()) {
+            st->profile->startData(CMD_TIMEOUT_MS,
+                [this, mac](bool result, const std::string& err) {
+                    postToGui([this, mac, result, err]() {
+                        continueAfterStart(mac, result, QString::fromStdString(err));
+                    });
                 });
-            });
-    } else {
-        continueAfterStart(mac, true, QString());
-    }
+        } else {
+            continueAfterStart(mac, true, QString());
+        }
+    });
 }
 
 void MainWindow::continueAfterStart(const QString& mac, bool ok, const QString& err) {
@@ -1215,18 +1251,12 @@ void MainWindow::continueAfterStart(const QString& mac, bool ok, const QString& 
     appLog(QStringLiteral("App: device connected and streaming: %1 (%2)").arg(st->name, mac), "I", st);
     _connectingMacs.remove(mac);
     updateDeviceItemText(mac, true);
-    applySessionParams(st, [this, mac]() {
-        auto st = stateFor(mac);
-        if (!st || autoRecoveryCancelled(st)) {
-            return;
-        }
-        if (_restoreParamsMacs.remove(mac)) {
-            restoreSavedParams(mac, 0);
-        } else {
-            st->autoRecovery = false;
-            refreshControlStates(st);
-        }
-    });
+    if (_restoreParamsMacs.remove(mac)) {
+        restoreSavedParams(mac, 0);
+    } else {
+        st->autoRecovery = false;
+        refreshControlStates(st);
+    }
     if (_currentMac == mac) {
         refreshInfoPanel();
         retargetWaveforms();
@@ -1677,6 +1707,18 @@ void MainWindow::sendControllerSetParam(const QString& key, const QString& value
                                   }
                               });
                           });
+}
+
+void MainWindow::onNeucirControlClicked() {
+    auto* button = qobject_cast<QPushButton*>(sender());
+    auto st = currentState();
+    if (!button || !st || st->isReplay || !st->profile || !st->profile->isReady()
+        || !st->profile->hasInit()) {
+        return;
+    }
+    const QString key = button->property("neucirKey").toString();
+    const QString value = button->property("neucirValue").toString();
+    sendSetParam(st->profile, key, value);
 }
 
 void MainWindow::onNtfToggled() {
@@ -2497,6 +2539,14 @@ void MainWindow::refreshSdkLabel() {
     });
 }
 
+void MainWindow::refreshNeucirControls(const std::shared_ptr<DeviceState>& st) {
+    const bool supported = st && st->hasInfo && isNeucirDevice(st->info);
+    _neucirControlBox->setVisible(supported);
+    _neucirControlBox->setEnabled(supported && !st->isReplay && st->profile
+                                  && st->profile->isReady() && st->profile->hasInit()
+                                  && _replayMacs.isEmpty());
+}
+
 void MainWindow::refreshInfoPanel() {
     auto st = currentState();
     if (st && st->hasInfo) {
@@ -2524,6 +2574,7 @@ void MainWindow::refreshInfoPanel() {
     if (!st) {
         _cube->clearQuaternion();
     }
+    refreshNeucirControls(st);
     applyControlStates(st);
 }
 
@@ -3332,7 +3383,23 @@ void MainWindow::onPlotTick() {
                                   && (st->emg.allocated || st->angle.allocated))
                                  || (st->bioKind() == DeviceState::BioKind::EEG && st->eeg.allocated)
                                  || (st->bioKind() == DeviceState::BioKind::PPG && st->ppg.allocated));
-    if (bioReady && !_bioWidgets.isEmpty() && !_bioWidgets.first()->hasSource()) {
+    bool bioBindingMissing = false;
+    if (st && st->bioKind() == DeviceState::BioKind::EMG) {
+        const bool hasAngle = st->info.AngleChannelCount > 0 || st->angle.allocated;
+        const int emgCh = st->emg.allocated ? qMin(st->emg.channels, _bioWidgets.size() - int(hasAngle)) : 0;
+        for (int i = 0; i < emgCh; ++i) {
+            if (!_bioWidgets[i]->hasSource()) {
+                bioBindingMissing = true;
+                break;
+            }
+        }
+        const int angleIndex = emgCh;
+        if (hasAngle && st->angle.allocated && angleIndex < _bioWidgets.size()
+            && !_bioWidgets[angleIndex]->hasSource()) {
+            bioBindingMissing = true;
+        }
+    }
+    if ((bioReady && !_bioWidgets.isEmpty() && !_bioWidgets.first()->hasSource()) || bioBindingMissing) {
         retargetBio(st);
     }
 

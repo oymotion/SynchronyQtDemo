@@ -80,6 +80,7 @@ private slots:
     void onAnalyzeClicked();
     void onPrevPage();
     void onNextPage();
+    void onNeucirControlClicked();
 
     // SDK bridge events (queued onto the GUI thread)
     void onBtEnableChanged(bool enabled);
@@ -193,6 +194,7 @@ private:
     void refreshGestureLabel();
     void refreshSdkLabel();
     void refreshInfoPanel();
+    void refreshNeucirControls(const std::shared_ptr<DeviceState>& st);
     void updateLostPacketLabel();
 
     void setReplayModeUi(bool replaying);
@@ -244,7 +246,7 @@ private:
     QMap<QString, QString> _lastDataPaths;
     bool _debugLogEnabled = true;
     bool _binDataEnabled = true;
-    bool _dongleDebugEnabled = true;
+    bool _dongleDebugEnabled = false;
 
     bool _updatingControls = false;
     bool _shuttingDown = false;
@@ -341,6 +343,7 @@ private:
     QLabel* _mtuLabel = nullptr;
     QLabel* _powerLabel = nullptr;
     QLabel* _lostPacketLabel = nullptr;
+    QGroupBox* _neucirControlBox = nullptr;
     QMap<QString, QLabel*> _valueLabels;
     class QVBoxLayout* _valueLayout = nullptr;
     QCheckBox* _chkDebugLog = nullptr;
