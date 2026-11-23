@@ -45,10 +45,11 @@ namespace {
 const int SCAN_DEVICE_PERIOD_MS = 6000;
 const int PACKAGE_COUNT = 32;
 const int CMD_TIMEOUT_MS = 5000;
+const int NEUCIR_CMD_TIMEOUT_MS = 50;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
-const char* const DEMO_VERSION = "0.1.66";
+const char* const DEMO_VERSION = "0.1.68";
 const int POWER_REFRESH_PERIOD_MS = 60000;
 // Battery reading stable band (%): hold the displayed value while a valid
 // reading differs by less than this.
@@ -1718,7 +1719,7 @@ void MainWindow::onNeucirControlClicked() {
     }
     const QString key = button->property("neucirKey").toString();
     const QString value = button->property("neucirValue").toString();
-    sendSetParam(st->profile, key, value);
+    st->profile->setParam(NEUCIR_CMD_TIMEOUT_MS, key.toStdString(), value.toStdString(), {});
 }
 
 void MainWindow::onNtfToggled() {
