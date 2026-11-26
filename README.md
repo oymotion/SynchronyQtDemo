@@ -80,8 +80,11 @@ in flight is a data race. Use `getVersion()` to get the SDK version string.
 controller.startScan(6000);
 ```
 
-`onScanResult` is invoked every `periodInMs` with the current device
-list.
+`periodInMs` sets the periodic summary interval, not a callback throttle.
+`onScanResult` fires immediately when a new device is discovered and again
+each period with the current non-empty list (including RSSI-only updates).
+`SensorControllerCallbacks::onScanStateChange` reports actual backend
+activity, errors and retry recovery.
 
 ### 3. Stop scan / check state
 
@@ -169,14 +172,17 @@ auto dev = profile->getDevice();   // sensor::BLEDevice: name / mac / rssi
 ### 9.1 Auto reconnect and resume data stream
 
 ```cpp
-profile->setAutoReconnect(true);   // default on in the demos; false to opt out
+profile->setAutoReconnect(true);   // native default on; false to opt out
+bool recovering = profile->isAutoReconnecting();
 ```
 
 While enabled and the device is streaming, an abnormal disconnect is followed
 by automatic reconnect -> `init()` with the previous arguments -> re-applying
 the previous `setParam` values -> `startData()`. Explicit user
-calls (`connect()`, `disconnect()`, `setAutoReconnect(false)`) cancel a
-pending resume.
+calls (`connect()`, `disconnect()`, `stopData()`,
+`setAutoReconnect(false)`) cancel a pending resume. `isAutoReconnecting()`
+reports pending or active recovery and returns false after completion,
+cancellation, or reconnect-budget exhaustion.
 
 To customize recovery, set the `onAutoReconnect(profile, hasLastSession,
 answer)` callback and call `answer(true)`, then handle it yourself (the answer
@@ -190,7 +196,7 @@ flow. If no answer arrives within 10 s the SDK runs the default recovery.
 auto info = profile->getDeviceInfo();   // valid after Ready + successful init
 // deviceName, modelName, hardwareVersion, firmwareVersion, MTUSize,
 // plus a ChannelCount / SampleRate pair per modality:
-// EMG/EEG/ECG/BRTH/Acc/Gyro/MagAngle/Euler/Quat/Ppg/Spo2/Impe/Gest, the
+// EMG/EEG/ECG/BRTH/Acc/Gyro/Angle/Euler/Quat/Ppg/Spo2/Impe/Gest/Mag, the
 // aggregated ImuChannelCount / ImuSampleRate (0 = no aggregated stream),
 // Emg/Eeg/EcgMaxSampleRate (0 = not reported), and the BLE link parameters
 // ConnectionIntervalMs / PeripheralLatency / SupervisionTimeoutMs
@@ -225,11 +231,12 @@ Data type list (`sensor::SensorDataView::Type`):
 ```
 SensorDataView::NTF_ACC = 1            acceleration, unit g
 SensorDataView::NTF_GYRO = 2           gyroscope, unit degree/s
+SensorDataView::NTF_MAG = 3            3-axis magnetometer, unit uT
 SensorDataView::NTF_EULER_DATA = 4     euler angle, unit degree
 SensorDataView::NTF_QUATERNION = 5     quaternion (w, x, y, z)
 SensorDataView::NTF_GEST = 7           gesture id
 SensorDataView::NTF_EMG_RAW_DATA = 8   unit uV
-SensorDataView::NTF_MAG_ANGLE = 13
+SensorDataView::NTF_ANGLE = 13         joint angle, unit degree
 SensorDataView::NTF_EEG = 16           unit uV
 SensorDataView::NTF_ECG = 17           unit uV
 SensorDataView::NTF_IMPEDANCE = 18     electrode impedance
@@ -252,9 +259,11 @@ Process data in `onData`. Each `sensor::SensorDataView` batch offers:
   `getImpedance` / `getSaturation` / `getSampleIndex` / `getTimeStampInMs` /
   `getAbsTimeStampInSec` / `isLost`, or `getChannelSample(channel, index)`
   for the whole `Sample`
-- `clone()` for an owned deep copy (`sensor::SensorData`); a borrowed batch is
-  only guaranteed readable inside the callback — `clone()` whatever you keep.
-  Probe `isDataValid()` once per batch, then read the points freely.
+- `clone()` for an owned deep copy (`sensor::SensorData`). A borrowed batch
+  remains allocated by the SDK after the callback, but newer data eventually
+  rewrites its slots and a stream restart invalidates it. Probe
+  `isDataValid()` once per batch and clone anything you retain or use after
+  its stream ends.
 
 ### 12.1 Synchronized start/stop on multiple devices
 
@@ -302,7 +311,7 @@ profile->setParam(t, "NTF_GEST", "ON", cb);  // NTF_GEST and NTF_EMG are mutuall
                                              // exclusive on legacy EMG devices
 profile->setParam(t, "NTF_BRTH", "ON", cb);
 profile->setParam(t, "NTF_IMPEDANCE", "ON", cb);
-profile->setParam(t, "NTF_MAG_ANGLE", "ON", cb);
+profile->setParam(t, "NTF_ANGLE", "ON", cb);
 profile->setParam(t, "NTF_PPG", "ON", cb);
 profile->setParam(t, "NTF_SPO2", "ON", cb);
 profile->setParam(t, "NTF_IMU", "ON", cb);   // all four ACC/GYRO/EULER/QUAT
@@ -330,9 +339,8 @@ profile->setParam(t, "IMU_SAMPLE_RATE", "100", cb);
 // getParam("PPG_SAMPLE_RATE_LIST")
 profile->setParam(t, "PPG_SAMPLE_RATE", "50", cb);
 
-// NeuCir remote control (NeuCir devices only)
-profile->setParam(t, "NEUCIR_SET_MODE", "APP_REMOTE", cb);
-profile->setParam(t, "NEUCIR_APP_CONTROL", "OPEN", cb);   // OPEN / CLOSE / STOP
+// Legacy raw-signal EMG only: "8" / "12" / "12:<batch_len>"
+profile->setParam(t, "EMG_RESOLUTION", "12", cb);
 
 // Bin export: "True" exports the session capture on stop/disconnect into
 // the SDK log directory; an absolute path exports there; "False"/"" disables
@@ -360,6 +368,8 @@ profile->getParam(t, "IMU_SAMPLE_RATE", cb);      // e.g. "50"
 profile->getParam(t, "IMU_SAMPLE_RATE_LIST", cb); // e.g. "50|100|200"
 profile->getParam(t, "PPG_SAMPLE_RATE", cb);      // e.g. "50"
 profile->getParam(t, "PPG_SAMPLE_RATE_LIST", cb); // e.g. "50|100"
+profile->getParam(t, "EMG_RESOLUTION", cb);       // "8" or "12"
+profile->getParam(t, "EMG_RESOLUTION_LIST", cb);  // "8|12" when supported
 ```
 
 ## Bin file recording and replay
@@ -435,16 +445,15 @@ background to flush pending log and bin records.
 The bundled Qt 6 Widgets app (`DemoEMG`) exercises the whole API: multi-device
 scan/connect with an RSSI-sorted list and a current-device display, bio panel
 with 8 waveforms (EMG mode, paged EEG + ECG/BRTH mode, or the fixed EEG + PPG
-+ SpO2 chart mode) with a Live Filter band picker and impedance readouts (shown while the IMPE switch is on), IMU
-waveforms with FFT spectra and a 3D quaternion cube, gesture box,
-NTF/FILTER/sample-rate controls (unsupported controls are hidden once the
-device info is known), battery display, Auto Reconnect and Clone Data toggles,
-SDK debug log and bin export toggles, and bin replay / analyze-to-CSV. A Multi
-Start/Stop toggle button starts (or stops) streaming on all connected devices
-in sync via `multiStartData` / `multiStopData`, and a
-Multi Replay Bin button replays several captures at once through
-`multiReplayBinFile` with group-wide pause/resume. The window title shows the
-demo version next to the SDK version.
++ SpO2 chart mode) with a Live Filter band picker and an optional fixed-range
+Angle row. EMG/EEG, ECG, and PPG rows can show per-stream FFT spectra; BRTH
+and SpO2 rows stay full-width. Impedance readouts appear only when supported
+and enabled. The IMU page includes ACC/GYRO/MAG/Euler/Quat plots, spectra and
+a 3D quaternion cube. The app also provides NTF/FILTER/sample-rate controls,
+battery display, Auto Reconnect and Clone Data toggles, SDK debug/bin toggles,
+and bin replay / analyze-to-CSV. Multi Start/Stop and Multi Replay Bin provide
+synchronized streaming and group replay with group-wide pause/resume. The
+window title shows the demo version next to the SDK version.
 
 ### Build the demo
 
