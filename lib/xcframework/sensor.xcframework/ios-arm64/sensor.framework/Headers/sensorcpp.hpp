@@ -129,7 +129,6 @@ inline void* makeCallContext(F fn) {
 
 using CompletionCallback = std::function<void(bool ok, const std::string& error)>;
 using ParamCallback = std::function<void(const std::string& result, const std::string& error)>;
-using ExecCallback = std::function<void(const std::vector<uint8_t>& result, const std::string& error)>;
 using BatteryCallback = std::function<void(int level, const std::string& error)>;
 using DeviceInfoCallback = std::function<void(const DeviceInfo& info, const std::string& error)>;
 using MultiResultMap = std::map<std::string, std::pair<bool, std::string>>;
@@ -168,25 +167,6 @@ inline void paramTrampoline(void* ctx, const char* result, const char* errorMsg)
     }
 }
 
-inline void execTrampoline(void* ctx, const uint8_t* result, size_t resultSize,
-                           const char* errorMsg) noexcept {
-    SdkThreadScope sdkThreadScope;
-    std::unique_ptr<CallContext<ExecCallback>> holder(
-        static_cast<CallContext<ExecCallback>*>(ctx));
-    try {
-        if (holder && holder->fn) {
-            std::vector<uint8_t> copy;
-            if (result != nullptr) {
-                copy.assign(result, result + resultSize);
-            }
-            holder->fn(copy, strOrEmpty(errorMsg));
-        }
-    } catch (const std::exception& e) {
-        reportCallbackException(e.what());
-    } catch (...) {
-        reportCallbackException(nullptr);
-    }
-}
 
 inline void batteryTrampoline(void* ctx, int result, const char* errorMsg) noexcept {
     SdkThreadScope sdkThreadScope;
@@ -404,32 +384,6 @@ public:
                               callCtx ? &detail::paramTrampoline : nullptr, callCtx);
     }
 
-    void exec(int timeoutMs, const std::vector<uint8_t>& data, ExecCallback cb = nullptr) {
-        void* callCtx = cb ? detail::makeCallContext(std::move(cb)) : nullptr;
-        sen_profile_exec(_handle, timeoutMs, data.empty() ? nullptr : data.data(), data.size(),
-                         callCtx ? &detail::execTrampoline : nullptr, callCtx);
-    }
-    std::future<std::vector<uint8_t>> execAsync(int timeoutMs, const std::vector<uint8_t>& data) {
-        auto promise = std::make_shared<std::promise<std::vector<uint8_t>>>();
-        std::future<std::vector<uint8_t>> fut = promise->get_future();
-        exec(timeoutMs, data, [promise](const std::vector<uint8_t>& result, const std::string& error) {
-            if (error.empty()) {
-                promise->set_value(result);
-            } else {
-                promise->set_exception(std::make_exception_ptr(std::runtime_error(error)));
-            }
-        });
-        return fut;
-    }
-    std::vector<uint8_t> execSync(int timeoutMs, const std::vector<uint8_t>& data) {
-        detail::throwOnSdkThread();
-        std::future<std::vector<uint8_t>> fut = execAsync(timeoutMs, data);
-        if (fut.wait_for(std::chrono::milliseconds(detail::effectiveTimeoutMs(timeoutMs)) +
-                         std::chrono::seconds(15)) == std::future_status::timeout) {
-            throw std::runtime_error("Error: Timeout");
-        }
-        return fut.get();
-    }
 
     std::future<bool> connectAsync() {
         auto promise = std::make_shared<std::promise<bool>>();

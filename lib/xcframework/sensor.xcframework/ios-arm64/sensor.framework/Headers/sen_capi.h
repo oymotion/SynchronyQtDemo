@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SEN_CAPI_VERSION 25
+#define SEN_CAPI_VERSION 26
 
 typedef struct sen_controller sen_controller_t;
 typedef struct sen_profile sen_profile_t;
@@ -56,7 +56,6 @@ typedef struct {
 
 typedef void (*sen_completion_cb)(void* ctx, int result, const char* errorMsg);
 typedef void (*sen_param_cb)(void* ctx, const char* result, const char* errorMsg);
-typedef void (*sen_exec_cb)(void* ctx, const uint8_t* result, size_t resultSize, const char* errorMsg);
 typedef void (*sen_battery_cb)(void* ctx, int result, const char* errorMsg);
 typedef void (*sen_info_cb)(void* ctx, const sen_device_info_t* info, const char* errorMsg);
 
@@ -168,9 +167,6 @@ SEN_API void sen_profile_set_param(sen_profile_t* profile, int timeoutMs,
                                          sen_param_cb cb, void* ctx);
 SEN_API void sen_profile_get_param(sen_profile_t* profile, int timeoutMs,
                                          const char* key, sen_param_cb cb, void* ctx);
-SEN_API void sen_profile_exec(sen_profile_t* profile, int timeoutMs,
-                                    const uint8_t* data, size_t dataSize,
-                                    sen_exec_cb cb, void* ctx);
 
 SEN_API void sen_profile_set_auto_reconnect(sen_profile_t* profile, int enabled);
 SEN_API int sen_profile_get_auto_reconnect(sen_profile_t* profile);

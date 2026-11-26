@@ -56,10 +56,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)getParamWithKey:(NSString*)key
              completion:(void (^)(NSString* result, NSError* _Nullable err))completion
              NS_SWIFT_ASYNC_NAME(getParam(key:));
-- (void)exec:(NSData*)data timeout:(NSTimeInterval)timeout
-      completion:(nullable void (^)(NSData* result, NSError* _Nullable err))completion;
-- (void)execWithData:(NSData*)data
-      completion:(nullable void (^)(NSData* result, NSError* _Nullable err))completion;
 
 - (void)log:(nullable NSString*)message level:(nullable NSString*)level;
 - (void)log:(nullable NSString*)message;

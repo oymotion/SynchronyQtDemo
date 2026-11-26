@@ -25,7 +25,17 @@ import java.util.List;
 public final class SensorBleBridge {
 
     static {
-        System.loadLibrary("sensor");
+        loadSensorLibrary();
+    }
+
+    public static void loadSensorLibrary() {
+        String libraryName = "sensor";
+        try {
+            libraryName = (String) Class.forName("com.oymotion.sensor.capi.BuildConfig")
+                    .getField("SENSOR_LIBRARY_NAME").get(null);
+        } catch (ClassNotFoundException | NoSuchFieldException | IllegalAccessException ignored) {
+        }
+        System.loadLibrary(libraryName);
     }
 
     public static native void nativeOnScanResult(SensorScanCallback callback, ScanResult result);

@@ -45,7 +45,6 @@ namespace {
 const int SCAN_DEVICE_PERIOD_MS = 6000;
 const int PACKAGE_COUNT = 32;
 const int CMD_TIMEOUT_MS = 5000;
-const int NEUCIR_CMD_TIMEOUT_MS = 50;
 const int PLOT_UPDATE_INTERVAL_MS = 50;
 const int FFT_UPDATE_INTERVAL_MS = 200;   // spectrum recompute interval
 // The demo's own version.
@@ -113,9 +112,6 @@ QString mtuText(const sensor::DeviceInfo& info) {
 }
 
 bool isNeucirDevice(const sensor::DeviceInfo& info) {
-    const QString model = QString::fromStdString(info.modelName).trimmed();
-    return model.startsWith(QStringLiteral("ORE-3000"), Qt::CaseInsensitive)
-           || model.startsWith(QStringLiteral("OYFM-70"), Qt::CaseInsensitive);
 }
 
 int readyState() { return static_cast<int>(sensor::BLEDevice::State::Ready); }
@@ -1711,15 +1707,6 @@ void MainWindow::sendControllerSetParam(const QString& key, const QString& value
 }
 
 void MainWindow::onNeucirControlClicked() {
-    auto* button = qobject_cast<QPushButton*>(sender());
-    auto st = currentState();
-    if (!button || !st || st->isReplay || !st->profile || !st->profile->isReady()
-        || !st->profile->hasInit()) {
-        return;
-    }
-    const QString key = button->property("neucirKey").toString();
-    const QString value = button->property("neucirValue").toString();
-    st->profile->setParam(NEUCIR_CMD_TIMEOUT_MS, key.toStdString(), value.toStdString(), {});
 }
 
 void MainWindow::onNtfToggled() {
@@ -2541,11 +2528,6 @@ void MainWindow::refreshSdkLabel() {
 }
 
 void MainWindow::refreshNeucirControls(const std::shared_ptr<DeviceState>& st) {
-    const bool supported = st && st->hasInfo && isNeucirDevice(st->info);
-    _neucirControlBox->setVisible(supported);
-    _neucirControlBox->setEnabled(supported && !st->isReplay && st->profile
-                                  && st->profile->isReady() && st->profile->hasInit()
-                                  && _replayMacs.isEmpty());
 }
 
 void MainWindow::refreshInfoPanel() {
